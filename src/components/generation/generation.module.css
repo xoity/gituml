@@ -1,0 +1,129 @@
+.notes {
+  position: relative;
+  border-top: 1px solid var(--line);
+}
+.notesToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 46px;
+  padding: 12px 0;
+  font-size: 12px;
+  font-weight: 450;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  transition: color 150ms ease-out;
+}
+.notesToggle > svg:first-child {
+  width: 13px;
+}
+.notesState {
+  margin-left: auto;
+  font-size: 10px;
+}
+.notes[data-streaming="true"] .notesState {
+  color: var(--accent);
+}
+.chevron {
+  transition: transform 160ms ease-out;
+}
+.notesToggle[aria-expanded="false"] .chevron {
+  transform: rotate(-90deg);
+}
+.notesBody {
+  max-height: 280px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+  padding: 1px 10px 20px 0;
+  overflow-wrap: anywhere;
+}
+.prose {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.prose p + p {
+  margin-top: 8px;
+}
+.prose .noteHeading {
+  color: var(--ink);
+  font-weight: 550;
+  margin: 16px 0 6px;
+}
+.prose .noteHeading:first-child {
+  margin-top: 0;
+}
+.prose strong {
+  color: var(--ink);
+  font-weight: 550;
+}
+.prose code {
+  font-size: 0.9em;
+  background: var(--wash);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.notesEmpty {
+  font-size: 12px;
+  color: var(--muted);
+}
+.cursor {
+  display: inline-block;
+  width: 4px;
+  height: 12px;
+  margin-top: 7px;
+  background: var(--accent);
+  animation: signal 1.5s ease-in-out infinite;
+}
+.followButton {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: 0 2px 6px #0001;
+  font-size: 11px;
+}
+.notesToggle:focus-visible,
+.notesBody:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .notesToggle:hover {
+    color: var(--ink);
+  }
+}
+@media (max-width: 600px) {
+  .notesBody {
+    max-height: 230px;
+  }
+}
+@keyframes signal {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notes * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

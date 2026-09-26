@@ -1,0 +1,96 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as Sitemaps from "~/lib/sitemaps";
+
+const store = vi.hoisted(() => ({
+  browse: [] as Array<{
+    username: string;
+    repo: string;
+    lastSuccessfulAt: string;
+  }>,
+  videos: [] as Array<{ owner: string; repo: string; createdAt?: string }>,
+  videosOn: true,
+}));
+
+vi.mock("next/cache", () => ({
+  unstable_cache: (read: () => Promise<unknown>) => read,
+}));
+vi.mock("~/server/browse-index-cache", () => ({
+  getCachedBrowseIndex: async () => store.browse,
+}));
+vi.mock("~/server/explainer/config", () => ({
+  isVideoExplainerEnabled: () => store.videosOn,
+}));
+vi.mock("~/server/explainer/catalog", () => ({
+  listVideoCards: async () => store.videos,
+}));
+vi.mock("~/lib/sitemaps", async (importOriginal) => ({
+  ...(await importOriginal<typeof Sitemaps>()),
+  // Small pages make the shard arithmetic visible.
+  SITEMAP_PAGE_SIZE: 10,
+  getSitemapCount: (routeCount: number, fixedRouteCount: number) =>
+    Math.max(1, Math.ceil((routeCount + fixedRouteCount) / 10)),
+}));
+
+import robots from "./robots";
+import sitemap, { generateSitemaps } from "./sitemap";
+
+const entry = (index: number) => ({
+  username: "acme",
+  repo: `repo-${index}`,
+  lastSuccessfulAt: "2026-09-01T00:00:00.000Z",
+});
+
+beforeEach(() => {
+  store.browse = [];
+  store.videos = [];
+  store.videosOn = true;
+});
+
+describe("robots.txt", () => {
+  it("lets link-preview crawlers fetch video posters under /api", async () => {
+    const [everyone] = (await robots()).rules as Array<{
+      allow: string[];
+      disallow: string[];
+    }>;
+    expect(everyone!.disallow).toContain("/api/");
+    expect(everyone!.allow).toContain("/api/video/file");
+  });
+
+  it("lists every sitemap shard, video pages included", async () => {
+    store.browse = Array.from({ length: 5 }, (_, index) => entry(index));
+    store.videos = Array.from({ length: 5 }, (_, index) => ({
+      owner: "acme",
+      repo: `video-${index}`,
+    }));
+    const shards = await generateSitemaps();
+    expect(shards).toHaveLength(2);
+    expect((await robots()).sitemap).toEqual([
+      "http://localhost:3000/sitemap/0.xml",
+      "http://localhost:3000/sitemap/1.xml",
+    ]);
+  });
+
+  it("does not list an empty shard when videos are off", async () => {
+    // Two fixed pages and seven repositories fill one page of ten.
+    store.videosOn = false;
+    store.browse = Array.from({ length: 7 }, (_, index) => entry(index));
+    expect(await generateSitemaps()).toHaveLength(1);
+    store.videosOn = true;
+    expect(await generateSitemaps()).toHaveLength(2);
+  });
+});
+
+describe("sitemap", () => {
+  it("lists the video gallery with the fixed pages while videos are on", async () => {
+    const urls = (await sitemap({ id: Promise.resolve("0") })).map(
+      (route) => route.url,
+    );
+    expect(urls).toContain("http://localhost:3000/videos");
+
+    store.videosOn = false;
+    const without = (await sitemap({ id: Promise.resolve("0") })).map(
+      (route) => route.url,
+    );
+    expect(without).not.toContain("http://localhost:3000/videos");
+  });
+});

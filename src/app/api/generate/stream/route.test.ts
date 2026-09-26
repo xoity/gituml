@@ -1,0 +1,1153 @@
+// @vitest-environment node
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as StreamFinalization from "~/server/generate/stream-finalization";
+
+const mocks = vi.hoisted(() => ({
+  after: vi.fn(),
+  admitQuota: vi.fn(),
+  buildStageTokenEstimate: vi.fn(),
+  clearFailureSummary: vi.fn(),
+  estimateCost: vi.fn(),
+  finalizeQuota: vi.fn(),
+  finalizeStream: vi.fn(),
+  generateStructuredOutput: vi.fn(),
+  getGithubData: vi.fn(),
+  getModel: vi.fn(),
+  isComplimentaryGateEnabled: vi.fn(),
+  shouldApplyComplimentaryGate: vi.fn(),
+  persistAudit: vi.fn(),
+  consumeInfrastructureRateLimit: vi.fn(),
+  consumeRateLimit: vi.fn(),
+  refundInfrastructureRateLimit: vi.fn(),
+  refundRateLimit: vi.fn(),
+  markQuotaStarted: vi.fn(),
+  registerActiveGeneration: vi.fn(),
+  resolveRequestCredentials: vi.fn(),
+  saveDiagram: vi.fn(),
+  startCancellationPolling: vi.fn(),
+  stopCancellationPolling: vi.fn(),
+  streamCompletion: vi.fn(),
+  unregisterActiveGeneration: vi.fn(),
+  writePublicPreview: vi.fn(),
+  afterCallback: undefined as undefined | (() => Promise<void>),
+  cancellationCallback: undefined as undefined | (() => void),
+}));
+
+vi.mock("next/server", () => ({ after: mocks.after }));
+vi.mock("~/server/admin/live-events", () => ({
+  emitLiveEvent: vi.fn(async () => undefined),
+  requestOrigin: vi.fn(() => ({})),
+}));
+vi.mock("next/cache", () => ({
+  revalidatePath: vi.fn(),
+  revalidateTag: vi.fn(),
+}));
+vi.mock("~/server/browse-index-cache", () => ({
+  revalidateBrowseIndexCache: vi.fn(),
+}));
+vi.mock("~/server/storage/artifact-store", () => ({
+  writePublicDiagramPreview: mocks.writePublicPreview,
+}));
+vi.mock("~/server/storage/diagram-state", () => ({
+  clearSuccessfulDiagramFailureSummary: mocks.clearFailureSummary,
+  persistTerminalSessionAudit: mocks.persistAudit,
+  saveSuccessfulDiagramState: mocks.saveDiagram,
+  updatePublicBrowseIndexForSuccessfulDiagram: vi.fn(),
+}));
+vi.mock("~/server/generate/complimentary-gate", () => ({
+  admitComplimentaryQuota: mocks.admitQuota,
+  buildComplimentaryAdmissionTokens: vi.fn(() => 10_000),
+  buildComplimentaryStageTokenEstimate: mocks.buildStageTokenEstimate,
+  finalizeComplimentaryQuota: mocks.finalizeQuota,
+  markComplimentaryQuotaStarted: mocks.markQuotaStarted,
+  getComplimentaryDenialMessage: vi.fn(() => "Daily limit reached."),
+  getComplimentaryModelMismatchMessage: vi.fn(() => "Model mismatch."),
+  getComplimentaryProviderMismatchMessage: vi.fn(() => "Provider mismatch."),
+  isComplimentaryGateEnabled: mocks.isComplimentaryGateEnabled,
+  modelMatchesComplimentaryFamily: vi.fn(() => true),
+  shouldApplyComplimentaryGate: mocks.shouldApplyComplimentaryGate,
+}));
+vi.mock("~/server/generate/stream-finalization", async (importOriginal) => {
+  const actual = await importOriginal<typeof StreamFinalization>();
+  mocks.finalizeStream.mockImplementation(actual.finalizeGenerationStream);
+  return { ...actual, finalizeGenerationStream: mocks.finalizeStream };
+});
+vi.mock("~/server/generate/cost-estimate", () => ({
+  estimateGenerationCost: mocks.estimateCost,
+}));
+vi.mock("~/server/generate/cancellation", () => ({
+  registerActiveGeneration: mocks.registerActiveGeneration,
+  startGenerationCancellationPolling: mocks.startCancellationPolling,
+  unregisterActiveGeneration: mocks.unregisterActiveGeneration,
+}));
+vi.mock("~/server/generate/github", () => ({
+  getGithubData: mocks.getGithubData,
+  REPOSITORY_TOO_LARGE_ERROR:
+    "Repository is too large for analysis. Try a smaller repo.",
+}));
+vi.mock("~/server/generate/model-config", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getModel: mocks.getModel,
+  getProvider: vi.fn(() => "openai"),
+  getProviderLabel: vi.fn(() => "OpenAI"),
+  shouldUseExactInputTokenCount: vi.fn(() => true),
+}));
+vi.mock("~/server/generate/openai", () => ({
+  generateStructuredOutput: mocks.generateStructuredOutput,
+  streamCompletion: mocks.streamCompletion,
+}));
+vi.mock("~/server/http/request-credentials", () => ({
+  resolveRequestCredentials: mocks.resolveRequestCredentials,
+}));
+vi.mock("~/server/generate/rate-limit", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  consumeGenerationInfrastructureRateLimit:
+    mocks.consumeInfrastructureRateLimit,
+  consumeGenerationRateLimit: mocks.consumeRateLimit,
+  refundGenerationInfrastructureRateLimit: mocks.refundInfrastructureRateLimit,
+  refundGenerationRateLimit: mocks.refundRateLimit,
+}));
+import { POST } from "~/app/api/generate/stream/route";
+import { emitLiveEvent } from "~/server/admin/live-events";
+
+const estimateCostSummary = {
+  kind: "estimate" as const,
+  approximate: true,
+  amountUsd: 0.01,
+  display: "$0.0100 USD",
+  pricingModel: "gpt-5.6-terra",
+  usage: { inputTokens: 100, outputTokens: 100, totalTokens: 200 },
+};
+
+function request(
+  body: Record<string, unknown> = {},
+  headers: Record<string, string> = {},
+) {
+  return new Request("https://gituml.example/api/generate/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ username: "openai", repo: "openai-node", ...body }),
+  });
+}
+
+function mockEstimate(explanationInputTokens: number) {
+  mocks.estimateCost.mockResolvedValue({
+    costSummary: estimateCostSummary,
+    estimatedInputTokens: explanationInputTokens,
+    estimatedOutputTokens: 200,
+    pricingModel: "gpt-5.6-terra",
+    pricing: { inputPerMillionUsd: 1, outputPerMillionUsd: 1 },
+    explanationInputTokens,
+    graphStaticInputTokens: 100,
+    graphRepairStaticInputTokens: 100,
+  });
+}
+
+function readSseEvents(body: string): Array<Record<string, unknown>> {
+  return body
+    .split("\n\n")
+    .filter((message) => message.startsWith("data: "))
+    .map((message) => JSON.parse(message.slice(6)) as Record<string, unknown>);
+}
+
+describe("POST /api/generate/stream", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.generateStructuredOutput.mockReset();
+    mocks.getModel.mockReturnValue("gpt-5.6-terra");
+    mocks.isComplimentaryGateEnabled.mockReturnValue(true);
+    mocks.shouldApplyComplimentaryGate.mockReturnValue(true);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.getGithubData.mockResolvedValue({
+      defaultBranch: "main",
+      fileTree: "src/index.ts",
+      pathTypes: new Map([["src/index.ts", "blob"]]),
+      readme: "# OpenAI Node",
+      isPrivate: false,
+      stargazerCount: 10,
+    });
+    mocks.consumeInfrastructureRateLimit.mockResolvedValue({
+      allowed: true,
+      retryAfterSeconds: 0,
+      consumed: true,
+    });
+    mocks.consumeRateLimit.mockResolvedValue({
+      allowed: true,
+      retryAfterSeconds: 0,
+      consumed: true,
+    });
+    mocks.refundInfrastructureRateLimit.mockResolvedValue(undefined);
+    mocks.refundRateLimit.mockResolvedValue(undefined);
+    mocks.markQuotaStarted.mockResolvedValue(undefined);
+    mocks.persistAudit.mockResolvedValue(undefined);
+    mocks.clearFailureSummary.mockResolvedValue(undefined);
+    mocks.saveDiagram.mockResolvedValue(true);
+    mocks.finalizeQuota.mockResolvedValue(undefined);
+    mocks.afterCallback = undefined;
+    mocks.after.mockImplementation((callback: () => Promise<void>) => {
+      mocks.afterCallback = callback;
+    });
+    mocks.buildStageTokenEstimate.mockImplementation(
+      (
+        estimate: {
+          explanationInputTokens: number;
+          graphStaticInputTokens: number;
+          graphRepairStaticInputTokens: number;
+        },
+        stage: { stage: "explanation" } | { stage: "graph"; attempt: number },
+      ) => {
+        if (stage.stage === "explanation") {
+          return estimate.explanationInputTokens + 6_000;
+        }
+        return stage.attempt === 1
+          ? estimate.graphStaticInputTokens + 12_000
+          : estimate.graphRepairStaticInputTokens + 20_000;
+      },
+    );
+    mocks.registerActiveGeneration.mockResolvedValue(true);
+    mocks.resolveRequestCredentials.mockImplementation(
+      async (
+        _request: Request,
+        explicit: { apiKey?: string; githubPat?: string },
+      ) => explicit,
+    );
+    mocks.unregisterActiveGeneration.mockResolvedValue(undefined);
+    mocks.writePublicPreview.mockResolvedValue(true);
+    mocks.cancellationCallback = undefined;
+    mocks.startCancellationPolling.mockImplementation(
+      ({ onCancelled }: { onCancelled: () => void }) => {
+        mocks.cancellationCallback = onCancelled;
+        return mocks.stopCancellationPolling;
+      },
+    );
+  });
+
+  it("throttles a complimentary caller before spending any upstream work", async () => {
+    mockEstimate(1_000);
+    mocks.consumeRateLimit.mockResolvedValue({
+      allowed: false,
+      retryAfterSeconds: 900,
+      consumed: true,
+    });
+
+    const response = await POST(request());
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("900");
+    expect(body.error_code).toBe("RATE_LIMITED");
+    expect(body.error).toContain("15 minutes");
+    // Nothing downstream of the limiter may run: no GitHub fetch, no quota
+    // reservation, no model call.
+    expect(mocks.getGithubData).not.toHaveBeenCalled();
+    expect(mocks.admitQuota).not.toHaveBeenCalled();
+    expect(mocks.streamCompletion).not.toHaveBeenCalled();
+  });
+
+  it("refunds the rate-limit slot when the repository never resolved", async () => {
+    mockEstimate(1_000);
+    mocks.getGithubData.mockRejectedValue(new Error("Repository not found."));
+
+    const response = await POST(
+      request({}, { "x-forwarded-for": "203.0.113.7" }),
+    );
+    const body = await response.text();
+    await mocks.afterCallback?.();
+
+    expect(body).toContain("REPOSITORY_NOT_FOUND");
+    expect(body).toContain("GitHub access");
+    // The caller reached a model call for nothing, so the slot goes back.
+    expect(mocks.refundRateLimit).toHaveBeenCalledWith({
+      clientIp: "203.0.113.7",
+    });
+    expect(mocks.streamCompletion).not.toHaveBeenCalled();
+  });
+
+  it("keeps the rate-limit slot once the repository was verified", async () => {
+    mockEstimate(1_000);
+    mocks.streamCompletion.mockRejectedValue(new Error("upstream exploded"));
+
+    const response = await POST(
+      request({}, { "x-forwarded-for": "203.0.113.7" }),
+    );
+    await response.text();
+    await mocks.afterCallback?.();
+
+    expect(mocks.refundRateLimit).not.toHaveBeenCalled();
+  });
+
+  it("names a repository on the live feed only once it is confirmed public", async () => {
+    mockEstimate(1_000);
+    const live = () =>
+      vi
+        .mocked(emitLiveEvent)
+        .mock.calls.map(([event]) => [
+          event.kind,
+          event.repo,
+          event.job?.state ?? null,
+        ]);
+
+    mocks.getGithubData.mockRejectedValueOnce(
+      new Error("Repository not found."),
+    );
+    await (await POST(request())).text();
+    await mocks.afterCallback?.();
+    expect(live()).toEqual([["diagram.finished", "a repository", null]]);
+
+    vi.mocked(emitLiveEvent).mockClear();
+    mocks.streamCompletion.mockRejectedValue(new Error("upstream exploded"));
+    await (await POST(request())).text();
+    await mocks.afterCallback?.();
+    expect(live()).toEqual([
+      ["diagram.started", "openai/openai-node", "start"],
+      ["diagram.finished", "openai/openai-node", "end"],
+    ]);
+
+    vi.mocked(emitLiveEvent).mockClear();
+    mocks.resolveRequestCredentials.mockResolvedValue({ githubPat: "ghp_x" });
+    await (await POST(request())).text();
+    await mocks.afterCallback?.();
+    expect(live()).toEqual([
+      ["diagram.started", "a private repository", "start"],
+      ["diagram.finished", "a private repository", "end"],
+    ]);
+  });
+
+  it("ends the live job and closes the stream even when finalizing throws", async () => {
+    mockEstimate(1_000);
+    mocks.streamCompletion.mockRejectedValue(new Error("upstream exploded"));
+    mocks.finalizeStream.mockRejectedValueOnce(new Error("storage exploded"));
+
+    // The response ends (no hang until the platform timeout).
+    await (await POST(request())).text();
+    await mocks.afterCallback?.();
+
+    expect(
+      vi
+        .mocked(emitLiveEvent)
+        .mock.calls.map(([event]) => [event.kind, event.job?.state ?? null]),
+    ).toEqual([
+      ["diagram.started", "start"],
+      ["diagram.finished", "end"],
+    ]);
+  });
+
+  it("does not throttle a caller who brings their own API key", async () => {
+    mockEstimate(1_000);
+    mocks.resolveRequestCredentials.mockResolvedValue({ apiKey: "sk-user" });
+    mocks.consumeRateLimit.mockResolvedValue({
+      allowed: false,
+      retryAfterSeconds: 900,
+    });
+
+    const response = await POST(request());
+    await response.text();
+
+    expect(response.status).toBe(200);
+    expect(mocks.consumeRateLimit).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized repository before reserving complimentary quota", async () => {
+    mockEstimate(950_000);
+
+    const response = await POST(request());
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-generation-session-id")).toBeTruthy();
+    expect(body).toContain('"error_code":"TOKEN_LIMIT_EXCEEDED"');
+    expect(mocks.admitQuota).not.toHaveBeenCalled();
+    expect(mocks.streamCompletion).not.toHaveBeenCalled();
+  });
+
+  it("rejects a repository at exactly the hard token limit", async () => {
+    mockEstimate(900_000);
+
+    const response = await POST(request());
+    const body = await response.text();
+
+    expect(body).toContain('"error_code":"TOKEN_LIMIT_EXCEEDED"');
+    expect(mocks.admitQuota).not.toHaveBeenCalled();
+    expect(mocks.streamCompletion).not.toHaveBeenCalled();
+  });
+
+  it("allows a large repository on the server key when the daily gate is disabled", async () => {
+    mockEstimate(150_000);
+    mocks.isComplimentaryGateEnabled.mockReturnValue(false);
+    mocks.shouldApplyComplimentaryGate.mockReturnValue(false);
+    mocks.admitQuota.mockResolvedValue({ admitted: false });
+    mocks.streamCompletion.mockRejectedValue(new Error("Provider unavailable"));
+
+    const response = await POST(request());
+    const body = await response.text();
+
+    expect(body).not.toContain('"error_code":"API_KEY_REQUIRED"');
+    expect(body).not.toContain('"error_code":"DAILY_FREE_TOKEN_LIMIT_REACHED"');
+    expect(body).toContain('"error_code":"STREAM_FAILED"');
+    expect(mocks.admitQuota).not.toHaveBeenCalled();
+    expect(mocks.streamCompletion).toHaveBeenCalledTimes(1);
+    expect(mocks.finalizeQuota).not.toHaveBeenCalled();
+    expect(mocks.estimateCost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: undefined,
+        includeGraphRepairInputTokens: false,
+      }),
+    );
+  });
+
+  it("uses same-origin stored credentials resolved at the request boundary", async () => {
+    mockEstimate(950_000);
+    mocks.resolveRequestCredentials.mockResolvedValueOnce({
+      apiKey: "stored-openai-key",
+      githubPat: "stored-github-pat",
+    });
+    const generationRequest = request();
+
+    const response = await POST(generationRequest);
+    await response.text();
+
+    expect(mocks.resolveRequestCredentials).toHaveBeenCalledWith(
+      generationRequest,
+      { apiKey: undefined, githubPat: undefined },
+    );
+    expect(mocks.getGithubData).toHaveBeenCalledWith(
+      "openai",
+      "openai-node",
+      "stored-github-pat",
+      expect.any(AbortSignal),
+    );
+    expect(mocks.estimateCost).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "stored-openai-key" }),
+    );
+  });
+
+  it("commits only the in-flight stage bound before closing a failed stream", async () => {
+    mockEstimate(100);
+    mocks.admitQuota.mockResolvedValue({
+      admitted: true,
+      reservation: {
+        reservationId: "reservation-1",
+        quotaBucket: "daily",
+        quotaDateUtc: "2026-07-13",
+        quotaResetAt: "2026-07-14T00:00:00.000Z",
+        reservedTokens: 10_000,
+      },
+    });
+    mocks.streamCompletion.mockRejectedValue(new Error("Provider unavailable"));
+
+    const response = await POST(request());
+    const body = await response.text();
+
+    expect(mocks.finalizeQuota).toHaveBeenCalledWith(
+      expect.objectContaining({ committedTokens: 6_100 }),
+    );
+    expect(mocks.persistAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.persistAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audit: expect.objectContaining({
+          quotaStatus: "finalized",
+          actualCommittedTokens: 6_100,
+        }),
+      }),
+    );
+    expect(body).toContain('"error_code":"STREAM_FAILED"');
+    expect(body).toContain('"actualCommittedTokens":6100');
+  });
+
+  it("aborts shared generation work when distributed cancellation is observed", async () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const cancelToken = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+    mocks.getGithubData.mockImplementation(
+      (
+        _username: string,
+        _repo: string,
+        _githubPat: string | undefined,
+        signal: AbortSignal,
+      ) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+          queueMicrotask(() => mocks.cancellationCallback?.());
+        }),
+    );
+
+    const response = await POST(
+      request({ session_id: sessionId, cancel_token: cancelToken }),
+    );
+    const body = await response.text();
+    await mocks.afterCallback?.();
+
+    expect(response.headers.get("x-generation-session-id")).toBe(sessionId);
+    expect(mocks.registerActiveGeneration).toHaveBeenCalledWith(
+      sessionId,
+      cancelToken,
+    );
+    expect(mocks.startCancellationPolling).toHaveBeenCalledWith({
+      sessionId,
+      onCancelled: expect.any(Function),
+    });
+    expect(mocks.stopCancellationPolling).toHaveBeenCalledTimes(1);
+    expect(mocks.unregisterActiveGeneration).toHaveBeenCalledWith(
+      sessionId,
+      cancelToken,
+    );
+    expect(mocks.streamCompletion).not.toHaveBeenCalled();
+    expect(mocks.persistAudit).not.toHaveBeenCalled();
+    expect(body).not.toContain('"status":"error"');
+    expect(console.info).toHaveBeenCalledWith(
+      expect.stringContaining('"outcome":"cancelled"'),
+    );
+  });
+
+  it("cancels immediately when the client aborted during request admission", async () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const cancelToken = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+    const abortController = new AbortController();
+    // The client disconnects while admission is still mid-Redis round trips,
+    // so the request signal is already aborted before the route can attach
+    // its abort listener (which would then never fire).
+    mocks.resolveRequestCredentials.mockImplementation(
+      async (
+        _request: Request,
+        explicit: { apiKey?: string; githubPat?: string },
+      ) => {
+        abortController.abort();
+        return explicit;
+      },
+    );
+
+    const response = await POST(
+      new Request("https://gituml.example/api/generate/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: "openai",
+          repo: "openai-node",
+          session_id: sessionId,
+          cancel_token: cancelToken,
+        }),
+        signal: abortController.signal,
+      }),
+    );
+    const body = await response.text();
+    await mocks.afterCallback?.();
+
+    expect(mocks.getGithubData).not.toHaveBeenCalled();
+    expect(mocks.streamCompletion).not.toHaveBeenCalled();
+    expect(body).not.toContain('"status":"error"');
+    expect(mocks.unregisterActiveGeneration).toHaveBeenCalledWith(
+      sessionId,
+      cancelToken,
+    );
+    expect(console.info).toHaveBeenCalledWith(
+      expect.stringContaining('"outcome":"cancelled"'),
+    );
+  });
+
+  it("commits the explanation-stage bound when cancelled mid-request", async () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const cancelToken = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+    mockEstimate(100);
+    mocks.admitQuota.mockResolvedValue({
+      admitted: true,
+      reservation: {
+        reservationId: "reservation-1",
+        quotaBucket: "daily",
+        quotaDateUtc: "2026-07-13",
+        quotaResetAt: "2026-07-14T00:00:00.000Z",
+        reservedTokens: 30_000,
+      },
+    });
+    mocks.streamCompletion.mockImplementation(
+      ({ signal }: { signal: AbortSignal }) => ({
+        stream: (async function* () {
+          queueMicrotask(() => mocks.cancellationCallback?.());
+          await new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+          });
+          yield "";
+        })(),
+        usagePromise: Promise.resolve(null),
+      }),
+    );
+
+    const response = await POST(
+      request({ session_id: sessionId, cancel_token: cancelToken }),
+    );
+    await response.text();
+
+    expect(mocks.finalizeQuota).toHaveBeenCalledWith(
+      expect.objectContaining({ committedTokens: 6_100 }),
+    );
+    expect(console.info).toHaveBeenCalledWith(
+      expect.stringContaining('"outcome":"cancelled"'),
+    );
+  });
+
+  it.each([
+    { measuredTokens: 100, committedTokens: 12_200 },
+    { measuredTokens: 45_000, committedTokens: 45_000 },
+  ])(
+    "keeps measured usage of $measuredTokens when graph generation is cancelled",
+    async ({ measuredTokens, committedTokens }) => {
+      const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+      const cancelToken = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+      mockEstimate(100);
+      mocks.admitQuota.mockResolvedValue({
+        admitted: true,
+        reservation: {
+          reservationId: "reservation-1",
+          quotaBucket: "daily",
+          quotaDateUtc: "2026-07-13",
+          quotaResetAt: "2026-07-14T00:00:00.000Z",
+          reservedTokens: 30_000,
+        },
+      });
+      const explanationUsage = {
+        inputTokens: 80,
+        outputTokens: measuredTokens - 80,
+        totalTokens: measuredTokens,
+      };
+      mocks.streamCompletion.mockResolvedValue({
+        stream: (async function* () {
+          yield "<explanation>Measured explanation.</explanation>";
+        })(),
+        usagePromise: Promise.resolve(explanationUsage),
+      });
+      mocks.generateStructuredOutput.mockImplementation(
+        ({ signal }: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+            queueMicrotask(() => mocks.cancellationCallback?.());
+          }),
+      );
+
+      const response = await POST(
+        request({ session_id: sessionId, cancel_token: cancelToken }),
+      );
+      await response.text();
+
+      expect(mocks.finalizeQuota).toHaveBeenCalledWith(
+        expect.objectContaining({ committedTokens }),
+      );
+      expect(console.info).toHaveBeenCalledWith(
+        expect.stringContaining('"outcome":"cancelled"'),
+      );
+    },
+  );
+
+  it("fails closed when cancellation registration is unavailable", async () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const cancelToken = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+    mocks.registerActiveGeneration.mockRejectedValueOnce(
+      new Error("secret Upstash failure"),
+    );
+
+    const response = await POST(
+      request({ session_id: sessionId, cancel_token: cancelToken }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error_code: "CANCELLATION_UNAVAILABLE",
+    });
+    expect(mocks.getGithubData).not.toHaveBeenCalled();
+    expect(mocks.startCancellationPolling).not.toHaveBeenCalled();
+  });
+
+  it("sends a slim success audit without duplicating result bodies", async () => {
+    mockEstimate(100);
+    mocks.admitQuota.mockResolvedValue({
+      admitted: true,
+      reservation: {
+        reservationId: "reservation-1",
+        quotaBucket: "daily",
+        quotaDateUtc: "2026-07-13",
+        quotaResetAt: "2026-07-14T00:00:00.000Z",
+        reservedTokens: 10_000,
+      },
+    });
+    const usage = {
+      inputTokens: 80,
+      outputTokens: 20,
+      totalTokens: 100,
+      cachedInputTokens: 40,
+      reasoningTokens: 10,
+    };
+    mocks.streamCompletion.mockResolvedValue({
+      stream: (async function* () {
+        yield "<explanation>Hello-world request flow.</explanation>";
+      })(),
+      usagePromise: Promise.resolve(usage),
+    });
+    const graph = {
+      groups: [],
+      nodes: [
+        {
+          id: "entrypoint",
+          label: "Entry point",
+          type: "TypeScript module",
+          description: null,
+          groupId: null,
+          path: "src/index.ts",
+          shape: "box",
+        },
+      ],
+      edges: [],
+    };
+    mocks.generateStructuredOutput.mockResolvedValue({
+      output: graph,
+      rawText: JSON.stringify(graph),
+      usage,
+    });
+
+    const response = await POST(request());
+    const events = readSseEvents(await response.text());
+    const terminal = events.find((event) => event.status === "complete");
+    const terminalAudit = terminal?.latest_session_audit as
+      Record<string, unknown> | undefined;
+
+    expect(terminal).toMatchObject({
+      status: "complete",
+      explanation: "Hello-world request flow.",
+      graph,
+    });
+    expect(terminal?.diagram).toEqual(expect.stringContaining("flowchart TD"));
+    expect(terminal).not.toHaveProperty("graph_attempts");
+    expect(terminalAudit).toMatchObject({
+      status: "succeeded",
+      quotaStatus: "finalized",
+      actualCommittedTokens: 200,
+      graph: null,
+      graphAttempts: [],
+      stageUsages: [],
+      timeline: [],
+    });
+    expect(terminalAudit).not.toHaveProperty("explanation");
+    expect(terminalAudit).not.toHaveProperty("compiledDiagram");
+    expect(console.info).toHaveBeenCalledWith(
+      expect.stringContaining('"cached_input_tokens":80'),
+    );
+    expect(console.info).toHaveBeenCalledWith(
+      expect.stringContaining('"reasoning_tokens":20'),
+    );
+    expect(mocks.clearFailureSummary).not.toHaveBeenCalled();
+    await mocks.afterCallback?.();
+    expect(mocks.clearFailureSummary).toHaveBeenCalledWith({
+      username: "openai",
+      repo: "openai-node",
+      githubPat: undefined,
+      visibility: "public",
+    });
+    expect(mocks.writePublicPreview).toHaveBeenCalledWith({
+      username: "openai",
+      repo: "openai-node",
+      diagram: expect.stringContaining("flowchart TD"),
+      lastSuccessfulAt: expect.any(String),
+    });
+  });
+
+  it("keeps the final cost labeled as an estimate when stage usage is missing", async () => {
+    mockEstimate(100);
+    mocks.admitQuota.mockResolvedValue({
+      admitted: true,
+      reservation: {
+        reservationId: "reservation-1",
+        quotaBucket: "daily",
+        quotaDateUtc: "2026-07-13",
+        quotaResetAt: "2026-07-14T00:00:00.000Z",
+        reservedTokens: 20_000,
+      },
+    });
+    mocks.streamCompletion.mockResolvedValue({
+      stream: (async function* () {
+        yield "<explanation>Usage-free explanation.</explanation>";
+      })(),
+      usagePromise: Promise.resolve(null),
+    });
+    const graph = {
+      groups: [],
+      nodes: [
+        {
+          id: "entrypoint",
+          label: "Entry point",
+          type: "TypeScript module",
+          description: null,
+          groupId: null,
+          path: "src/index.ts",
+          shape: "box",
+        },
+      ],
+      edges: [],
+    };
+    mocks.generateStructuredOutput.mockResolvedValue({
+      output: graph,
+      rawText: JSON.stringify(graph),
+      usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 },
+    });
+
+    const response = await POST(request());
+    const terminal = readSseEvents(await response.text()).find(
+      (event) => event.status === "complete",
+    );
+
+    expect(terminal?.cost_summary).toMatchObject({
+      kind: "estimate",
+      approximate: true,
+      note: expect.stringContaining("remains an estimate"),
+    });
+  });
+
+  it("streams complete output beyond estimates and accounts for all measured tokens", async () => {
+    mockEstimate(100);
+    mocks.admitQuota.mockResolvedValue({
+      admitted: true,
+      reservation: {
+        reservationId: "reservation-1",
+        quotaBucket: "daily",
+        quotaDateUtc: "2026-07-13",
+        quotaResetAt: "2026-07-14T00:00:00.000Z",
+        reservedTokens: 10_000,
+      },
+    });
+    const usage = {
+      inputTokens: 80,
+      outputTokens: 12_000,
+      totalTokens: 12_080,
+    };
+    const sourceChunks = [
+      "<explanation>",
+      "Hello",
+      " ",
+      "streaming",
+      " world.",
+      "</explanation>",
+    ];
+    mocks.streamCompletion.mockResolvedValue({
+      stream: (async function* () {
+        yield* sourceChunks;
+      })(),
+      usagePromise: Promise.resolve(usage),
+    });
+    const graph = {
+      groups: [],
+      nodes: [
+        {
+          id: "entrypoint",
+          label: "Entry point",
+          type: "TypeScript module",
+          description: null,
+          groupId: null,
+          path: "src/index.ts",
+          shape: "box",
+        },
+      ],
+      edges: [],
+    };
+    mocks.generateStructuredOutput.mockResolvedValue({
+      output: graph,
+      rawText: JSON.stringify(graph),
+      usage,
+    });
+
+    const response = await POST(request());
+    const events = readSseEvents(await response.text());
+    const explanationChunks = events
+      .filter((event) => event.status === "explanation_chunk")
+      .map((event) => event.chunk as string);
+
+    expect(mocks.streamCompletion.mock.calls[0]?.[0]).not.toHaveProperty(
+      "maxOutputTokens",
+    );
+    expect(
+      mocks.generateStructuredOutput.mock.calls[0]?.[0],
+    ).not.toHaveProperty("maxOutputTokens");
+    expect(mocks.finalizeQuota).toHaveBeenCalledWith(
+      expect.objectContaining({ committedTokens: 24_160 }),
+    );
+    expect(explanationChunks.join("")).toBe(sourceChunks.join(""));
+    expect(explanationChunks.length).toBeLessThan(sourceChunks.length);
+    expect(events.at(-1)).toMatchObject({
+      status: "complete",
+      explanation: "Hello streaming world.",
+    });
+  });
+
+  it("logs sanitized validation categories for successful retry sessions", async () => {
+    mockEstimate(100);
+    mocks.admitQuota.mockResolvedValue({
+      admitted: true,
+      reservation: {
+        reservationId: "reservation-1",
+        quotaBucket: "daily",
+        quotaDateUtc: "2026-07-13",
+        quotaResetAt: "2026-07-14T00:00:00.000Z",
+        reservedTokens: 50_000,
+      },
+    });
+    const usage = { inputTokens: 80, outputTokens: 20, totalTokens: 100 };
+    mocks.streamCompletion.mockResolvedValue({
+      stream: (async function* () {
+        yield "<explanation>Retry diagnostics.</explanation>";
+      })(),
+      usagePromise: Promise.resolve(usage),
+    });
+    const invalidGraph = {
+      groups: [],
+      nodes: [
+        {
+          id: "entrypoint",
+          label: "Entry point",
+          type: "TypeScript module",
+          description: null,
+          groupId: null,
+          path: "src/private-name.ts",
+          shape: "box",
+        },
+      ],
+      edges: [],
+    };
+    const validGraph = {
+      ...invalidGraph,
+      nodes: [{ ...invalidGraph.nodes[0], path: "src/index.ts" }],
+    };
+    mocks.generateStructuredOutput
+      .mockResolvedValueOnce({
+        output: invalidGraph,
+        rawText: JSON.stringify(invalidGraph),
+        usage,
+      })
+      .mockResolvedValueOnce({
+        output: validGraph,
+        rawText: JSON.stringify(validGraph),
+        usage,
+      });
+
+    const response = await POST(request());
+    await response.text();
+    const finishLog = vi
+      .mocked(console.info)
+      .mock.calls.map(([value]) => String(value))
+      .find((value) => value.includes('"event":"generate.stream.finished"'));
+    const finishEvent = JSON.parse(finishLog ?? "{}") as Record<
+      string,
+      unknown
+    >;
+
+    expect(finishEvent.graph_validation_categories).toEqual({
+      missing_repository_path: 1,
+    });
+    expect(finishLog).not.toContain("private-name");
+  });
+  it.each([false, true])(
+    "generates architecture in one Luna request and only makes another call for a needed repair (%s)",
+    async (repair) => {
+      mocks.getModel.mockReturnValue("gpt-5.6-luna");
+      mocks.isComplimentaryGateEnabled.mockReturnValue(false);
+      mocks.shouldApplyComplimentaryGate.mockReturnValue(false);
+      const paths = Array.from(
+        { length: 12 },
+        (_, i) => `src/component${i}.ts`,
+      );
+      mocks.getGithubData.mockResolvedValue({
+        defaultBranch: "main",
+        fileTree: paths.join("\n"),
+        pathTypes: new Map(paths.map((path) => [path, "blob"])),
+        readme: "Application",
+        isPrivate: false,
+        stargazerCount: 0,
+      });
+      mockEstimate(1000);
+      const usage = {
+        inputTokens: 1000,
+        outputTokens: 1000,
+        totalTokens: 2000,
+        serviceTier: "priority",
+      };
+      const graph = {
+        groups: [],
+        nodes: [
+          {
+            id: "entry",
+            label: "Entry",
+            type: "module",
+            description: null,
+            groupId: null,
+            path: paths[0],
+            shape: null,
+          },
+        ],
+        edges: [],
+      };
+      const explanation = 'A sourced application brief with "quoted" paths.';
+      const initialGraph = repair
+        ? {
+            ...graph,
+            edges: [
+              {
+                from: "missing",
+                to: "entry",
+                label: null,
+                description: null,
+                style: null,
+              },
+            ],
+          }
+        : graph;
+      const output = JSON.stringify({ explanation, graph: initialGraph });
+      mocks.streamCompletion.mockResolvedValue({
+        stream: (async function* () {
+          for (let i = 0; i < output.length; i += 17)
+            yield output.slice(i, i + 17);
+        })(),
+        usagePromise: Promise.resolve(usage),
+      });
+      mocks.generateStructuredOutput.mockResolvedValue({
+        output: graph,
+        rawText: JSON.stringify(graph),
+        usage,
+      });
+      const response = await POST(request());
+      const events = readSseEvents(await response.text());
+      const terminal = events.find((event) => event.status === "complete");
+      expect(
+        events
+          .filter((e) => e.status === "explanation_chunk")
+          .map((e) => e.chunk)
+          .join(""),
+      ).toBe(explanation);
+      expect(mocks.streamCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "gpt-5.6-luna",
+          userPrompt: expect.stringContaining("<source_files>"),
+        }),
+      );
+      expect(mocks.generateStructuredOutput).toHaveBeenCalledTimes(
+        repair ? 1 : 0,
+      );
+      if (repair)
+        expect(mocks.generateStructuredOutput).toHaveBeenCalledWith(
+          expect.objectContaining({
+            model: "gpt-5.6-luna",
+            userPrompt: expect.stringContaining("<validation_feedback>"),
+          }),
+        );
+      expect(terminal).toMatchObject({
+        cost_summary: {
+          kind: "actual",
+          amountUsd: repair ? 0.0056 : 0.0028,
+          pricingModel: "gpt-5.6-luna",
+        },
+        latest_session_audit: {
+          model: "gpt-5.6-luna",
+          analysisModel: "gpt-5.6-luna",
+        },
+      });
+    },
+  );
+  it("recovers a slow Luna stream once, resets partial text, and accounts for cancelled usage", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getModel.mockReturnValue("gpt-5.6-luna");
+      mockEstimate(1000);
+      mocks.admitQuota.mockResolvedValue({
+        admitted: true,
+        reservation: {
+          quotaDateUtc: "2026-09-18",
+          quotaBucket: "anonymous",
+          reservedTokens: 30_000,
+          quotaResetAt: "2026-09-19T00:00:00Z",
+        },
+      });
+      const usage = {
+        inputTokens: 1000,
+        outputTokens: 1000,
+        totalTokens: 2000,
+        serviceTier: "priority",
+      };
+      const output = JSON.stringify({
+        explanation: "Fresh overview",
+        graph: {
+          groups: [],
+          nodes: [
+            {
+              id: "entry",
+              label: "Entry",
+              groupId: null,
+              path: "src/index.ts",
+              shape: "box",
+            },
+          ],
+          edges: [],
+        },
+      });
+      let firstSignal: AbortSignal | undefined;
+      mocks.streamCompletion.mockReset();
+      mocks.streamCompletion
+        .mockImplementationOnce(async ({ signal }: { signal: AbortSignal }) => {
+          firstSignal = signal;
+          return {
+            stream: (async function* () {
+              yield '{"explanation":"Abandoned';
+              await new Promise((_, reject) => {
+                signal.addEventListener("abort", () => reject(signal.reason), {
+                  once: true,
+                });
+              });
+            })(),
+            usagePromise: Promise.resolve(null),
+          };
+        })
+        .mockResolvedValueOnce({
+          stream: (async function* () {
+            yield output;
+          })(),
+          usagePromise: Promise.resolve(usage),
+        });
+      const response = await POST(request());
+      const body = response.text();
+      await vi.advanceTimersByTimeAsync(18_001);
+      const events = readSseEvents(await body);
+      expect(firstSignal?.aborted).toBe(true);
+      expect(mocks.streamCompletion).toHaveBeenCalledTimes(2);
+      expect(mocks.streamCompletion.mock.calls[1]?.[0]).toMatchObject({
+        model: "gpt-5.6-luna",
+        reasoningEffort: "medium",
+      });
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          status: "explanation",
+          explanation: "",
+          message: "Retrying a slow model request...",
+        }),
+      );
+      expect(events.find((event) => event.status === "complete")).toMatchObject(
+        {
+          explanation: "Fresh overview",
+          cost_summary: {
+            kind: "estimate",
+            approximate: true,
+            usage: {
+              inputTokens: 2000,
+              outputTokens: 9000,
+              totalTokens: 11_000,
+            },
+          },
+        },
+      );
+      expect(mocks.finalizeQuota).toHaveBeenCalledWith(
+        expect.objectContaining({ committedTokens: 11_000 }),
+      );
+      expect(mocks.generateStructuredOutput).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

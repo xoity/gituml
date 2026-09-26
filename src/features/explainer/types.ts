@@ -1,0 +1,237 @@
+// Shared shapes for the explainer video: the model's plan, the narration clock,
+// and the stored artifact the browser player consumes.
+
+/**
+ * The free-form shot language the scene engine (public/video-engine/shots.js)
+ * draws. These lists are the single source of truth for the designer's tool
+ * schema, the prompt, the server normalizer and the engine (a test checks
+ * that shots.js and the prompt cover every entry). The field values below
+ * them (tones, icons, …) are checked against shots.js the same way.
+ */
+export const SHOT_KINDS = [
+  "heading",
+  "text",
+  "code",
+  "terminal",
+  "box",
+  "chip",
+  "file",
+  "tree",
+  "table",
+  "bars",
+  "number",
+  "stamp",
+  "browser",
+  "request",
+  "list",
+  "svg",
+  "image",
+  "arrow",
+] as const;
+export type ShotKind = (typeof SHOT_KINDS)[number];
+
+export const SHOT_ACTIONS = [
+  "highlight",
+  "dim",
+  "restore",
+  "exit",
+  "strike",
+  "pulse",
+  "shake",
+  "check",
+  "cross",
+  "replace",
+  "count",
+  "move",
+  "type",
+  "flow",
+  "scan",
+  "focus",
+  "reset",
+] as const;
+type ShotActionName = (typeof SHOT_ACTIONS)[number];
+
+// The values the engine draws for a few element fields; anything else falls
+// back to the first entry. A test checks each list against shots.js.
+
+/** Box, chip and stamp tones. */
+export const SHOT_TONES = ["plain", "accent", "soft", "ok", "bad", "ghost"];
+/** Box icons ("none" draws no icon). */
+export const SHOT_ICONS = [
+  "server",
+  "database",
+  "user",
+  "file",
+  "folder",
+  "globe",
+  "lock",
+  "bolt",
+  "clock",
+  "queue",
+  "cpu",
+  "cloud",
+  "key",
+  "gear",
+  "package",
+  "browser",
+  "terminal",
+  "shield",
+  "cache",
+  "none",
+];
+/** How a scene enters ("cut" is the engine's plain fallback). */
+export const SHOT_TRANSITIONS = ["slide", "push", "zoom", "cut"];
+/** The SVG shapes an svg element may draw, and the fills they may use. */
+export const SVG_SHAPES = [
+  "path",
+  "rect",
+  "circle",
+  "line",
+  "polyline",
+  "polygon",
+];
+export const SVG_PAINT = [
+  "none",
+  "paper",
+  "card",
+  "accent",
+  "soft",
+  "ink",
+  "ok",
+  "bad",
+];
+
+/** README pictures a film shows are img1, img2 or img3. */
+export const PICTURE_ID = /^img[1-3]$/;
+
+export interface ShotElement {
+  /** Lowercase snake_case, at most 32 characters, unique within its scene. */
+  id: string;
+  kind: ShotKind;
+  /** Canvas units: 16 × 9, one unit is 120 px. Arrows are routed and keep 0s. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Cue word; the element appears when it is spoken. */
+  at: string;
+  [field: string]: unknown;
+}
+
+export interface ShotAction {
+  do: ShotActionName;
+  at: string;
+  /** Element ids present in the scene, normalized like ShotElement.id. */
+  target: string[];
+  [field: string]: unknown;
+}
+
+export interface ShotBeat {
+  scene: string;
+  narration: string;
+  /** Set on a scene's first beat only. */
+  transition: string;
+  elements: ShotElement[];
+  actions: ShotAction[];
+}
+
+export interface ShotPlan {
+  title: string;
+  outro: string;
+  beats: ShotBeat[];
+  /** README pictures by id: same-origin paths to the copies stored with the film. */
+  images?: Record<string, string>;
+}
+
+export interface VideoMeta {
+  owner: string;
+  repo: string;
+  url: string;
+  description: string;
+  stars: number;
+  language: string;
+}
+
+export interface VideoWord {
+  /** Normalized spoken word, matched against plan cues. */
+  w: string;
+  /** Start and end in seconds on the video clock. */
+  s: number;
+  e: number;
+}
+
+export interface VideoTiming {
+  DURATION: number;
+  SPEECH_END: number;
+  beats: Array<{ start: number; end: number; words: VideoWord[] }>;
+}
+
+interface VideoGenerationStats {
+  totalMs: number;
+  readMs: number;
+  planMs: number;
+  /** Designing and narration run in parallel; this is the longer of the two. */
+  voiceMs: number;
+  planner: "api";
+  model: string;
+  /** Model cost at API list prices; null when the backend cannot report it. */
+  plannerCostUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  ttsCharacters: number;
+  /**
+   * Narration and transcription cost, estimated from list prices; missing on
+   * older videos, whose cost is the script and design only.
+   */
+  voiceCostUsd?: number;
+  /** The voice model that read the narration; missing on older videos. */
+  voice?: string;
+  warnings: string[];
+}
+
+export type VideoArtifact = {
+  repository: string;
+  createdAt: string;
+  meta: VideoMeta;
+  timing: VideoTiming;
+  /** Narration clips placed at `start` seconds: one take for the whole film (older videos have one per scene). */
+  voices: Array<{ start: number }>;
+  stats: VideoGenerationStats;
+  /** Version 1 (the template engine) is retired; only shot plans remain. */
+  version: 2;
+  plan: ShotPlan;
+};
+
+export type VideoGenerationStage =
+  "reading" | "planning" | "designing" | "saving";
+
+/** What a generation has done so far, for the live progress rows. */
+export interface VideoGenerationProgress {
+  sourceFiles?: number;
+  /** The model writing and designing the film, once it is chosen. */
+  model?: string;
+  scenes?: number;
+  beats?: number;
+  words?: number;
+  /** The narration, one line per beat, once the script is written. */
+  narration?: string[];
+  designed?: number;
+  voiced?: number;
+}
+
+export type VideoGenerationEvent =
+  | {
+      status: VideoGenerationStage;
+      elapsedMs: number;
+      progress?: VideoGenerationProgress;
+    }
+  | { status: "complete"; artifact: VideoArtifact }
+  /** `retryable: false` means trying again cannot help (e.g. a private repo). */
+  | { status: "error"; error: string; retryable?: boolean };
+
+export type VideoRenderStep = "starting" | "rendering" | "finishing";
+
+export type VideoRenderEvent =
+  | { status: "rendering"; progress: number; step?: VideoRenderStep }
+  | { status: "complete" }
+  | { status: "error"; error: string };

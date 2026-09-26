@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Live presence and the operator's event feed for gituml.example/admin.
+  "name": "gituml-presence",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "vars": {
+    "ALLOWED_ORIGINS": "https://gituml.example,https://www.gituml.example",
+    // Hands over the feed events it parked while no dashboard was open.
+    "SITE_ORIGIN": "https://gituml.example",
+  },
+  // New visitor sockets per network per minute, before they reach the object.
+  // Cloudflare counts per location and approximately, which is enough here.
+  "ratelimits": [
+    {
+      "name": "CONNECTS",
+      "namespace_id": "4711",
+      "simple": { "limit": 60, "period": 60 },
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "PRESENCE", "class_name": "Presence" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Presence"] }],
+}

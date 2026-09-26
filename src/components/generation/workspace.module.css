@@ -1,0 +1,652 @@
+.workspace,
+.controlsTheme {
+  --paper: hsl(var(--background));
+  --surface: hsl(var(--neo-panel));
+  --wash: hsl(var(--neo-panel-muted));
+  --ink: #291b35;
+  --muted: #6d5282;
+  --line: #a17bbd;
+  --edge: #33203f;
+  --hard-shadow: #33203f;
+  --accent: hsl(var(--neo-link));
+  color: var(--ink);
+}
+.workspace {
+  width: 100%;
+  max-width: 1200px;
+  margin-inline: auto;
+  padding: 32px 24px 48px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+:global(.dark) .workspace,
+:global(.dark) .controlsTheme {
+  --surface: #26202f;
+  --wash: #302638;
+  --ink: #eee3f7;
+  --muted: #ab9cb8;
+  --line: #75588c;
+  --edge: #9677ae;
+  --hard-shadow: #09060e;
+  --accent: #c49bed;
+}
+.fold {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 360ms var(--ease-out),
+    opacity 180ms ease;
+}
+.fold[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.foldClip {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.toolbarFold[data-open="true"] > .foldClip {
+  overflow: visible;
+}
+.work {
+  padding: 110px 5px 20px 0;
+}
+.workspace[data-has-diagram="true"] .work {
+  padding-top: 32px;
+}
+.source {
+  width: min(100%, 630px);
+  margin-inline: auto;
+}
+.repositoryControl {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 9px 10px 9px 18px;
+  border: 2px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 4px 4px 0 var(--hard-shadow);
+}
+.repositoryControl > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.repositoryName {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.repositoryName > span {
+  color: var(--muted);
+}
+.repositoryName strong {
+  font-weight: 650;
+}
+.primary,
+.stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex-shrink: 0;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1.5px solid #33203f;
+  border-radius: 5px;
+  box-shadow: 2px 2px 0 var(--hard-shadow);
+  font-size: 12px;
+  font-weight: 600;
+  color: #261333;
+  background: hsl(var(--neo-button));
+  transition:
+    background-color 150ms ease,
+    transform 150ms var(--ease-out);
+}
+.stop {
+  width: 42px;
+  padding: 0;
+  border-color: var(--edge);
+  color: var(--ink);
+  background: var(--wash);
+}
+.feedback {
+  width: min(100%, 604px);
+  margin: 24px auto 0;
+  padding: 0 8px;
+}
+.statusLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+}
+.statusLine > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.statusTitle {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+.elapsed {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.description {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 5px 0 0 27px;
+  overflow-wrap: anywhere;
+}
+.previousLabel {
+  margin: 8px 0 0 27px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.activityMark {
+  width: 17px;
+  height: 17px;
+  display: grid;
+  flex-shrink: 0;
+  grid-template-columns: repeat(3, 3px);
+  grid-template-rows: repeat(3, 3px);
+  gap: 3px;
+  align-content: center;
+}
+.activityMark i {
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.24;
+  animation: pixels 1.6s ease-in-out infinite;
+}
+.activityMark i:nth-child(3n + 1) {
+  animation-delay: -0.5s;
+}
+.activityMark i:nth-child(3n + 2) {
+  animation-delay: -0.25s;
+}
+.activityMark i:nth-child(2n) {
+  animation-delay: -0.8s;
+}
+.activityMark[data-active="false"] i {
+  animation: none;
+  opacity: 0.4;
+}
+.details {
+  margin: 17px 0 0 27px;
+}
+.details summary {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  width: fit-content;
+  min-height: 36px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  list-style: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.details summary::-webkit-details-marker {
+  display: none;
+}
+.details summary svg {
+  transition: transform 180ms var(--ease-out);
+}
+.details[open] summary svg {
+  transform: rotate(180deg);
+}
+.detailBody {
+  padding: 7px 0 2px 13px;
+  border-left: 2px solid var(--line);
+}
+.detailRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 31px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.detailRow > svg {
+  flex-shrink: 0;
+}
+.detailRow > svg:last-child:not(:first-child) {
+  margin-left: auto;
+  color: var(--accent);
+}
+.excerpt {
+  margin-top: 17px;
+  max-width: 480px;
+  font-size: 12px;
+  line-height: 1.85;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.excerpt > p {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.excerpt > div {
+  border-top: 0;
+  margin-top: 8px;
+}
+.resultToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+  width: 100%;
+  padding: 14px 5px 4px 0;
+}
+.repositoryTitle {
+  width: fit-content;
+  max-width: 100%;
+}
+.repositoryTitle a {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+.repositoryTitle svg {
+  flex-shrink: 0;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.actionButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 9px 16px;
+  border: 2px solid var(--edge);
+  border-radius: 6px;
+  box-shadow: 3px 3px 0 var(--hard-shadow);
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  transition:
+    background-color 150ms ease,
+    transform 150ms var(--ease-out);
+}
+.actionButton[aria-expanded="true"],
+.actionButton[aria-pressed="true"] {
+  background: var(--wash);
+}
+.actionButton[aria-expanded="true"] > svg:last-child {
+  transform: rotate(180deg);
+}
+.actionButton.primary {
+  background: hsl(var(--neo-button));
+  color: #261333;
+}
+.resultMetadata {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  padding: 18px 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.generatedTime {
+  min-width: 30ch;
+}
+.generatedTime[data-hydrated="false"] {
+  visibility: hidden;
+}
+.workspace button:disabled,
+.actionButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.resultActivity {
+  width: min(100%, 720px);
+  margin: 30px auto 6px;
+  padding: 8px 0 12px;
+}
+.resultActivity .activityFacts {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+.resultActivity .detailRow {
+  min-height: 24px;
+  font-size: 12px;
+}
+.resultActivity .detailRow > svg:last-child:not(:first-child) {
+  display: none;
+}
+.resultActivity .excerpt {
+  max-width: none;
+  margin-top: 20px;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.resultActivity .excerpt > p {
+  -webkit-line-clamp: 5;
+}
+.resultActivity .excerpt > div {
+  margin-top: 14px;
+}
+/* Only marks which toolbar column Export sits in; lays nothing out. */
+.exportSlot {
+  display: contents;
+}
+.exportControl {
+  position: relative;
+}
+.exportMenu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 12px);
+  right: 0;
+  width: min(348px, calc(100vw - 44px));
+  padding: 12px;
+  border: 2px solid var(--edge);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 3px 3px 0 var(--hard-shadow);
+  opacity: 0;
+  transform: translateY(-4px) scale(0.97);
+  transform-origin: calc(100% - 55px) top;
+  pointer-events: none;
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+.exportMenu[data-open="true"] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+  transition-duration: 180ms;
+}
+.exportOptions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.exportAction {
+  min-width: 0;
+}
+.exportActionButton {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 8px;
+  border: 2px solid var(--edge);
+  border-radius: 5px;
+  box-shadow: 2px 2px 0 var(--hard-shadow);
+  background: var(--wash);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  transition: transform 100ms var(--ease-out);
+}
+.exportButtonContent {
+  display: grid;
+}
+.exportButtonState {
+  grid-area: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
+}
+.exportButtonState[data-active="false"] {
+  opacity: 0;
+  transform: translateY(3px) scale(0.97);
+}
+.exportTooltip {
+  max-width: 220px;
+  background: var(--ink);
+  color: var(--surface);
+  border: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.exportError {
+  display: block;
+  margin-top: 9px;
+  font-size: 11px;
+  color: var(--ink);
+}
+.exportMenu[data-motion="false"],
+.exportAction[data-motion="false"] *,
+.exportTooltip[data-motion="false"] {
+  transition: none;
+}
+.diagram {
+  position: relative;
+  margin-top: 30px;
+}
+.diagram[data-opening="true"] {
+  min-height: 40vh;
+}
+.graphLayer {
+  opacity: 1;
+  transition: opacity 240ms ease;
+}
+.graphLayer[data-diagram-visible="false"] {
+  position: absolute;
+  inset: 0 0 auto;
+  opacity: 0;
+  pointer-events: none;
+}
+.chart {
+  width: 100%;
+  padding: 0;
+}
+.chart > div:last-child {
+  border-color: var(--line);
+  background: transparent;
+  border-radius: 8px;
+}
+.chart :global(.pointer-events-auto) {
+  background: var(--surface);
+  border: 1.5px solid var(--edge);
+  border-radius: 5px;
+  box-shadow: 2px 2px 0 var(--hard-shadow);
+  color: var(--ink);
+  --tw-ring-shadow: 0 0 transparent;
+}
+.chart button {
+  min-height: 40px;
+}
+.recovery {
+  margin: 18px 0 0 27px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.diagnostics {
+  margin-top: 32px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.diagnostics > summary {
+  cursor: pointer;
+  padding-block: 10px;
+}
+.workspace button:focus-visible,
+.workspace a:focus-visible,
+.workspace summary:focus-visible,
+.actionButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .primary:hover:not(:disabled),
+  .actionButton.primary:hover:not(:disabled) {
+    background: hsl(var(--neo-button-hover));
+  }
+  .stop:hover,
+  .actionButton:not(.primary):hover:not(:disabled),
+  .exportActionButton:hover:not(:disabled) {
+    background: var(--wash);
+    color: var(--ink);
+  }
+  .details summary:hover {
+    color: var(--ink);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .primary:active:not(:disabled),
+  .stop:active,
+  .actionButton:active:not(:disabled) {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }
+}
+@media (max-width: 640px) {
+  .workspace {
+    padding: 20px 18px 32px;
+  }
+  .work {
+    padding-top: 80px;
+  }
+  .repositoryControl {
+    gap: 9px;
+    padding-left: 12px;
+  }
+  .repositoryName > span {
+    display: none;
+  }
+  .statusTitle {
+    font-size: 12px;
+  }
+  .elapsed {
+    font-size: 10px;
+  }
+  .resultToolbar {
+    padding-top: 10px;
+  }
+  .resultActivity {
+    margin-top: 24px;
+  }
+  .resultActivity .activityFacts {
+    gap: 8px 18px;
+  }
+  .resultActivity .excerpt {
+    font-size: 13px;
+  }
+  .actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .actionButton {
+    width: 100%;
+    padding-inline: 10px;
+  }
+  .exportMenu {
+    left: 0;
+    right: auto;
+    transform-origin: 55px top;
+  }
+  /* In the right column (after the Video button), open toward the left: the
+     hidden menu still takes up room, and hanging off the screen's edge makes
+     Safari zoom the whole page out. */
+  .exportSlot[data-column="right"] .exportMenu {
+    left: auto;
+    right: 0;
+    transform-origin: calc(100% - 55px) top;
+  }
+  .exportActionButton {
+    padding-inline: 5px;
+    font-size: 11px;
+  }
+}
+@keyframes pixels {
+  0%,
+  80%,
+  100% {
+    opacity: 0.24;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace *,
+  .workspace *::after,
+  .controlsTheme *,
+  .controlsTheme *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .activityMark i {
+    opacity: 0.6;
+  }
+}
+@media (prefers-contrast: more) {
+  .workspace {
+    --muted: #594967;
+  }
+  :global(.dark) .workspace {
+    --muted: #cbbdd7;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .exportAction[data-motion="true"] .exportActionButton:active:not(:disabled) {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+    transition-duration: 140ms;
+  }
+}
+
+/* The Video toggle is new: three soft pulses when the page loads, then still. */
+@keyframes video-toggle-pulse {
+  0% {
+    box-shadow:
+      3px 3px 0 var(--hard-shadow),
+      0 0 0 0 rgba(168, 85, 247, 0.55);
+  }
+  100% {
+    box-shadow:
+      3px 3px 0 var(--hard-shadow),
+      0 0 0 12px rgba(168, 85, 247, 0);
+  }
+}
+.videoToggle[aria-expanded="false"] {
+  animation: video-toggle-pulse 1.6s ease-out 1s 3;
+}
+@media (prefers-reduced-motion: reduce) {
+  .videoToggle[aria-expanded="false"] {
+    animation: none;
+  }
+}

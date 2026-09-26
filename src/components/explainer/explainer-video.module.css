@@ -1,0 +1,556 @@
+.panel {
+  width: min(100%, 1040px);
+  margin: 26px auto 8px;
+  padding: 0 5px 0 0;
+}
+
+.player {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 2px solid var(--edge);
+  border-radius: 10px;
+  box-shadow: 4px 4px 0 var(--hard-shadow);
+  background: #f2e8ff;
+}
+/* Fullscreen keeps the controls: the player and its bar go full-window together. */
+.shell:fullscreen,
+.shell[data-expanded="true"] {
+  container-type: size;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: max(12px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+  background: #0b0810;
+}
+.shell[data-expanded="true"] {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+/* The video is wider than it is tall, so a phone held upright shows it
+   sideways, filling the screen, as the phone's own video player does. */
+@media (orientation: portrait) and (hover: none) and (pointer: coarse) {
+  .shell[data-expanded="true"] {
+    inset: 0 auto auto 0;
+    width: 100dvh;
+    height: 100dvw;
+    transform: translateX(100dvw) rotate(90deg);
+    transform-origin: 0 0;
+    /* Turned a quarter clockwise: the screen's top edge is the shell's left. */
+    padding: max(12px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-top));
+  }
+}
+/* 56px: the control bar and its gap. */
+.shell:fullscreen .player,
+.shell[data-expanded="true"] .player {
+  width: min(100%, calc((100cqh - 56px) * 16 / 9));
+  margin-inline: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.shell:fullscreen .controls,
+.shell[data-expanded="true"] .controls {
+  width: min(100%, calc((100cqh - 56px) * 16 / 9));
+  margin-inline: auto;
+}
+.shell:fullscreen .time,
+.shell[data-expanded="true"] .time {
+  color: #eee3f7;
+}
+
+/* The frame is the player's size; the stage scales itself inside it. */
+.stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  pointer-events: none;
+}
+
+.surface {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.surface {
+  /* A press and hold means 2x, not a text selection or a link menu. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.holdZone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 30%;
+}
+.holdZone[data-side="start"] {
+  left: 0;
+}
+.holdZone[data-side="end"] {
+  right: 0;
+}
+.holdBadge {
+  position: absolute;
+  top: 12px;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: max-content;
+  margin-inline: auto;
+  padding: 5px 11px;
+  border: 2px solid #17111f;
+  border-radius: 999px;
+  background: #bd85fb;
+  box-shadow: 2px 2px 0 #17111f;
+  color: #17111f;
+  font-size: 12px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: pop-in 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)) both;
+}
+.surface:focus-visible {
+  outline: 3px solid hsl(var(--neo-link));
+  outline-offset: -3px;
+}
+
+.bigPlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 84px;
+  height: 84px;
+  border: 3px solid #17111f;
+  border-radius: 50%;
+  background: #bd85fb;
+  box-shadow: 4px 4px 0 #17111f;
+  color: #17111f;
+  transition: transform 160ms var(--ease-out);
+}
+.surface:hover .bigPlay {
+  transform: scale(1.05);
+}
+.surface:active .bigPlay {
+  transform: scale(0.97);
+}
+
+.controls {
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+.controlButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border: 2px solid var(--edge);
+  border-radius: 6px;
+  box-shadow: 3px 3px 0 var(--hard-shadow);
+  color: var(--ink);
+  background: var(--surface);
+}
+.speedButton {
+  /* Fits "1.25×" without the row shifting as the speed changes. */
+  width: 52px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+.controlButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.scrubber {
+  flex: 1;
+  min-width: 0;
+  accent-color: hsl(var(--neo-link));
+  cursor: pointer;
+}
+/* A narrow bar keeps its room for seeking: elapsed time only. */
+@container (max-width: 420px) {
+  .total {
+    display: none;
+  }
+}
+.time {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px 20px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.metaConfirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.metaButton {
+  position: relative;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 650;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+/* A larger target than the underlined words, drawn nowhere: the buttons keep
+   their look and the line keeps its height. */
+.metaButton::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -4px;
+  right: -4px;
+  height: 24px;
+  transform: translateY(-50%);
+}
+@media (pointer: coarse) {
+  .metaButton::before {
+    left: -6px;
+    right: -6px;
+    height: 44px;
+  }
+}
+
+.error {
+  font-size: 13px;
+  color: #b3263a;
+}
+
+@media (max-width: 640px) {
+  .bigPlay {
+    width: 58px;
+    height: 58px;
+  }
+  .controls {
+    gap: 8px;
+  }
+}
+
+.share {
+  margin-top: 16px;
+}
+.shareRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+.shareNote {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.share .error {
+  margin-top: 10px;
+  text-align: center;
+}
+@media (max-width: 640px) {
+  .shareRow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* the shareable watch page */
+.watch {
+  max-width: 1100px;
+}
+.watchHead {
+  text-align: center;
+}
+.watchTitle {
+  margin: 0;
+  font-size: clamp(22px, 4vw, 34px);
+  font-weight: 500;
+  line-height: 1.15;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.watchTitle strong {
+  font-weight: 800;
+}
+.watchSub {
+  margin: 6px 0 0;
+  font-size: 15px;
+  color: var(--muted);
+}
+.watchLinks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+/* ---------- generation and loading, in the diagram generation's language ---------- */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes shimmer-text {
+  from {
+    background-position: 150%;
+  }
+  to {
+    background-position: -50%;
+  }
+}
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* No fill after the entrance: a transform left on the panel would pin the
+   full-window player inside the panel instead of the viewport. */
+.enter {
+  animation: fade-up 450ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1))
+    backwards;
+}
+.shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted) 35%,
+    var(--ink) 50%,
+    var(--muted) 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-text 1.4s linear infinite;
+}
+
+.skeleton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--wash, #f2e8ff);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.45) 50%,
+    transparent 70%
+  );
+  animation: sweep 1.6s ease-in-out infinite;
+}
+.skeletonLabel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.progressBody {
+  margin: 17px 0 0 27px;
+  padding: 4px 0 2px 13px;
+  border-left: 2px solid var(--line);
+}
+.rows {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  font-size: 12px;
+  color: var(--muted);
+  animation: fade-up 450ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)) both;
+}
+.row[data-state="running"],
+.row[data-state="done"] {
+  color: var(--ink);
+}
+.rowLabel {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+.rowMetric {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.rowPending,
+.rowRunning,
+.rowDone {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+.rowPending::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.rowRunning svg {
+  animation: spin 1.1s linear infinite;
+}
+.ringTrack {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 2.5;
+}
+.ringValue {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke-dasharray 300ms var(--ease-out, ease-out);
+}
+.rowDone {
+  border: 2px solid var(--edge);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--ink);
+  box-shadow: 2px 2px 0 var(--hard-shadow);
+  animation: pop-in 300ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)) both;
+}
+
+.script {
+  margin: 14px 0 4px;
+  max-width: 520px;
+}
+.script figcaption {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.script p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.85;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--accent);
+  animation: blink 1s steps(1) infinite;
+}
+
+.cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0 0 27px;
+  /* The fold clips overflow; leave room for the button's shadow and focus ring. */
+  padding-bottom: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enter,
+  .row,
+  .rowDone,
+  .rowRunning svg,
+  .shimmer,
+  .holdBadge,
+  .skeleton::after,
+  .caret {
+    animation: none;
+  }
+  .shimmer {
+    color: var(--ink);
+    background: none;
+  }
+}
+
+.shareJob {
+  width: min(100%, 460px);
+  margin: 12px auto 0;
+}
+.jobRow {
+  justify-content: center;
+}

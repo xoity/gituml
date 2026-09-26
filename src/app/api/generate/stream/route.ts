@@ -1,0 +1,1034 @@
+import {
+  prepareRepositoryContext,
+  selectAnalysisModel,
+} from "~/server/generate/repository-context";
+import { fetchSourceContext } from "~/server/generate/source-context";
+import {
+  architectureOutputSchema,
+  expandArchitectureGraph,
+  readArchitectureProgress,
+} from "~/server/generate/architecture-output";
+import { after } from "next/server";
+
+import type { GenerationTokenUsage } from "~/features/diagram/cost";
+import type { DiagramStreamMessage } from "~/features/diagram/types";
+import type { ArtifactVisibility } from "~/server/storage/types";
+import {
+  admitComplimentaryQuota,
+  buildComplimentaryAdmissionTokens,
+  buildComplimentaryStageTokenEstimate,
+  getComplimentaryDenialMessage,
+  getComplimentaryModelMismatchMessage,
+  getComplimentaryProviderMismatchMessage,
+  isComplimentaryGateEnabled,
+  markComplimentaryQuotaStarted,
+  modelMatchesComplimentaryFamily,
+  shouldApplyComplimentaryGate,
+  type ComplimentaryAdmissionEstimate,
+  type ComplimentaryQuotaReservation,
+} from "~/server/generate/complimentary-gate";
+import {
+  estimateGenerationCost,
+  type GenerationEstimateResult,
+} from "~/server/generate/cost-estimate";
+import { normalizeGenerationError } from "~/server/generate/errors";
+import { createFinalGenerationCostSummary } from "~/server/generate/final-cost";
+import {
+  startGenerationCancellationPolling,
+  unregisterActiveGeneration,
+} from "~/server/generate/cancellation";
+import {
+  EXPLANATION_REASONING_EFFORT,
+  EXPLANATION_ESTIMATED_OUTPUT_TOKENS,
+  MAX_GENERATION_INPUT_TOKENS,
+  ARCHITECTURE_SLOW_RETRY_MS,
+  getArchitectureReasoningEffort,
+  EXPLANATION_TEXT_VERBOSITY,
+} from "~/server/generate/generation-policy";
+import {
+  extractTaggedSection,
+  toTaggedMessage,
+} from "~/server/generate/format";
+import {
+  getGithubData,
+  REPOSITORY_TOO_LARGE_ERROR,
+} from "~/server/generate/github";
+import {
+  buildFileTreeLookup,
+  compileDiagramGraph,
+  type GraphValidationCategory,
+} from "~/server/generate/graph";
+import {
+  generateValidatedGraph,
+  type GenerationUsageAccounting,
+} from "~/server/generate/graph-planner";
+import {
+  getGenerationServiceTier,
+  getModel,
+  getProvider,
+  shouldUseExactInputTokenCount,
+  usesSinglePassArchitecture,
+} from "~/server/generate/model-config";
+import { withSlowRequestRetry } from "~/server/generate/slow-request-retry";
+import { streamCompletion } from "~/server/generate/openai";
+import {
+  SYSTEM_FIRST_PROMPT,
+  SYSTEM_ARCHITECTURE_PROMPT,
+} from "~/server/generate/prompts";
+import type { SuccessfulDiagramState } from "~/server/storage/generation-persistence";
+import {
+  createGenerationSessionAudit,
+  toTerminalSessionAudit,
+  withCompiledDiagram,
+  withEstimatedCost,
+  withExplanation,
+  withFinalCost,
+  withFailure,
+  withStageUsage,
+  withSuccess,
+  withTimelineEvent,
+} from "~/server/generate/session-audit";
+import { coalesceTextChunks } from "~/server/generate/stream-buffer";
+import {
+  createGenerationSseWriter,
+  type GenerationStreamState,
+} from "~/server/generate/sse-writer";
+import {
+  assertModelPricingAvailable,
+  createCostSummary,
+} from "~/server/generate/pricing";
+import { admitGenerationRequest } from "~/server/generate/request-admission";
+import {
+  finalizeGenerationStream,
+  logGenerationFinished,
+} from "~/server/generate/stream-finalization";
+import { emitLiveEvent, requestOrigin } from "~/server/admin/live-events";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 300;
+
+// Reserve enough of Vercel's 300s budget for quota reconciliation and a
+// contention-safe R2 write even when an upstream generation runs unusually long.
+const GENERATION_DEADLINE_MS = 220_000;
+const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
+
+function createAbortError() {
+  return new DOMException("Generation aborted.", "AbortError");
+}
+
+function throwIfAborted(signal: AbortSignal) {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : createAbortError();
+  }
+}
+
+export async function POST(request: Request) {
+  const admission = await admitGenerationRequest(request);
+  if (!admission.admitted) {
+    return admission.response;
+  }
+  const {
+    username,
+    repo,
+    apiKey,
+    githubPat,
+    sessionId,
+    cancelToken,
+    cancellationRegistered,
+    rateLimitedClientIp,
+    rateLimitedWindowStartSeconds,
+  } = admission.value;
+  // A private repository's name stays off the operator's live feed: a run is
+  // announced once GitHub has confirmed the repository public, and a run
+  // with the visitor's own GitHub token is labelled private throughout.
+  let liveLabel = githubPat?.trim() ? "a private repository" : "a repository";
+  let liveStarted = false;
+  const generationAbortController = new AbortController();
+  const deadlineSignal = AbortSignal.timeout(GENERATION_DEADLINE_MS);
+  const postResponseTasks: Array<() => Promise<void>> = [];
+  if (cancellationRegistered && cancelToken) {
+    postResponseTasks.push(async () => {
+      try {
+        await unregisterActiveGeneration(sessionId, cancelToken);
+      } catch {
+        console.warn(
+          JSON.stringify({
+            event: "generate.cancellation.cleanup_failed",
+            session_id: sessionId,
+            error: "Active cancellation registration cleanup failed.",
+          }),
+        );
+      }
+    });
+  }
+  let abortCause: "client" | "deadline" | null = null;
+  const streamState: GenerationStreamState = {
+    streamClosed: false,
+    wasCancelled: false,
+  };
+  let notifyStreamPull: () => void = () => undefined;
+  let resolveGenerationDone!: () => void;
+  const generationDone = new Promise<void>((resolve) => {
+    resolveGenerationDone = resolve;
+  });
+
+  const abortGeneration = (cause: "client" | "deadline") => {
+    abortCause ??= cause;
+    if (!generationAbortController.signal.aborted) {
+      generationAbortController.abort(
+        cause === "deadline"
+          ? new DOMException("Generation deadline exceeded.", "TimeoutError")
+          : createAbortError(),
+      );
+    }
+    // Release any writer waiting on downstream backpressure. Normal writes
+    // will observe the aborted signal and stop; a bounded terminal timeout
+    // event may still be enqueued so a connected reader gets the final state.
+    notifyStreamPull();
+  };
+  const handleRequestAbort = () => abortGeneration("client");
+  const handleDeadline = () => abortGeneration("deadline");
+  const stopCancellationPolling = cancellationRegistered
+    ? startGenerationCancellationPolling({
+        sessionId,
+        onCancelled: () => abortGeneration("client"),
+      })
+    : () => undefined;
+
+  request.signal.addEventListener("abort", handleRequestAbort, { once: true });
+  deadlineSignal.addEventListener("abort", handleDeadline, { once: true });
+  // Listeners attached to an already-aborted signal never fire, and the client
+  // may have disconnected while admission was performing Redis round trips.
+  if (request.signal.aborted) {
+    handleRequestAbort();
+  }
+
+  after(async () => {
+    await generationDone;
+    if (!postResponseTasks.length) {
+      return;
+    }
+    const postResponseStartedAt = performance.now();
+    const results = await Promise.allSettled(
+      postResponseTasks.map((task) => task()),
+    );
+    console.info(
+      JSON.stringify({
+        event: "generate.post_response.finished",
+        session_id: sessionId,
+        task_count: results.length,
+        rejected_task_count: results.filter(
+          (result) => result.status === "rejected",
+        ).length,
+        elapsed_ms: Math.round(performance.now() - postResponseStartedAt),
+      }),
+    );
+  });
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const {
+        close: closeStream,
+        notifyPull,
+        send,
+        sendComment,
+      } = createGenerationSseWriter({
+        controller,
+        signal: generationAbortController.signal,
+        state: streamState,
+        getAbortCause: () => abortCause,
+        abortGeneration,
+      });
+      notifyStreamPull = notifyPull;
+
+      void sendComment(`connected ${sessionId}`);
+      const heartbeat = setInterval(
+        () => void sendComment("keep-alive"),
+        SSE_HEARTBEAT_INTERVAL_MS,
+      );
+
+      const run = async () => {
+        let audit = createGenerationSessionAudit({
+          sessionId,
+          provider: "unknown",
+          model: "unknown",
+        });
+        let estimate: GenerationEstimateResult | null = null;
+        let quotaReservation: ComplimentaryQuotaReservation | null = null;
+        const accounting: GenerationUsageAccounting = {
+          actualUsages: [],
+          hasCompleteMeasuredUsage: true,
+          completedUnmeasuredTokenEstimate: 0,
+          pendingModelRequestTokenEstimate: 0,
+        };
+        let terminalPayload: DiagramStreamMessage | null = null;
+        let terminalErrorCode: string | null = null;
+        let repositoryVerified = false;
+        let successfulDiagramState: SuccessfulDiagramState | null = null;
+        const invocationStartedAt = performance.now();
+        const stageTimingsMs: Record<string, number> = {};
+        const graphValidationCategoryCounts: Partial<
+          Record<GraphValidationCategory, number>
+        > = {};
+        let storageVisibility: ArtifactVisibility = githubPat?.trim()
+          ? "private"
+          : "public";
+
+        const recordTiming = (stage: string, startedAt: number) => {
+          stageTimingsMs[stage] = Math.round(performance.now() - startedAt);
+        };
+
+        const queueTerminal = (payload: DiagramStreamMessage) => {
+          terminalPayload = payload;
+          terminalErrorCode =
+            typeof payload.error_code === "string" ? payload.error_code : null;
+        };
+
+        try {
+          throwIfAborted(generationAbortController.signal);
+          send({
+            status: "started",
+            session_id: audit.sessionId,
+            message: "Fetching repository data...",
+          });
+          const provider = getProvider();
+          const model = getModel(provider);
+          audit = { ...audit, provider, model };
+          assertModelPricingAvailable(model);
+
+          console.info(
+            JSON.stringify({
+              event: "generate.stream.started",
+              session_id: audit.sessionId,
+              provider,
+              model,
+              used_own_ai_key: Boolean(apiKey),
+              used_private_github_token: Boolean(githubPat),
+            }),
+          );
+          const announceStarted = () => {
+            liveStarted = true;
+            void emitLiveEvent({
+              kind: "diagram.started",
+              repo: liveLabel,
+              model,
+              ownKey: Boolean(apiKey),
+              job: { id: audit.sessionId, state: "start", label: liveLabel },
+              ...requestOrigin(request),
+            });
+          };
+
+          if (isComplimentaryGateEnabled() && !apiKey) {
+            if (provider !== "openai") {
+              const error = getComplimentaryProviderMismatchMessage();
+              audit = withFailure(
+                {
+                  ...audit,
+                  provider,
+                  model,
+                  quotaStatus: "denied",
+                },
+                {
+                  failureStage: "started",
+                  validationError: error,
+                },
+              );
+              queueTerminal({
+                status: "error",
+                session_id: audit.sessionId,
+                error,
+                error_code: "COMPLIMENTARY_GATE_PROVIDER_MISMATCH",
+                failure_stage: "started",
+                validation_error: error,
+                cost_summary: audit.finalCost ?? audit.estimatedCost,
+                latest_session_audit: audit,
+              });
+              return;
+            }
+
+            if (!modelMatchesComplimentaryFamily(model)) {
+              const error = getComplimentaryModelMismatchMessage();
+              audit = withFailure(
+                {
+                  ...audit,
+                  provider,
+                  model,
+                  quotaStatus: "denied",
+                },
+                {
+                  failureStage: "started",
+                  validationError: error,
+                },
+              );
+              queueTerminal({
+                status: "error",
+                session_id: audit.sessionId,
+                error,
+                error_code: "COMPLIMENTARY_GATE_MODEL_MISMATCH",
+                failure_stage: "started",
+                validation_error: error,
+                cost_summary: audit.finalCost ?? audit.estimatedCost,
+                latest_session_audit: audit,
+              });
+              return;
+            }
+          }
+
+          const githubStartedAt = performance.now();
+          const githubData = await getGithubData(
+            username,
+            repo,
+            githubPat,
+            generationAbortController.signal,
+          );
+          repositoryVerified = true;
+          recordTiming("github", githubStartedAt);
+          storageVisibility = githubData.isPrivate ? "private" : "public";
+          if (!githubPat?.trim() && !githubData.isPrivate)
+            liveLabel = `${username}/${repo}`;
+          announceStarted();
+          const context = prepareRepositoryContext(githubData);
+          const analysisModel = selectAnalysisModel({
+            provider,
+            model,
+            apiKey,
+          });
+          const singlePass = usesSinglePassArchitecture({
+            provider,
+            model,
+            apiKey,
+          });
+          const sourceStartedAt = performance.now();
+          const sources = await fetchSourceContext({
+            username,
+            repo,
+            githubData,
+            selectedPaths: context.selectedPaths,
+            githubPat,
+            signal: generationAbortController.signal,
+          });
+          recordTiming("source_context", sourceStartedAt);
+          audit = {
+            ...audit,
+            analysisModel,
+            sourcePaths: sources.paths,
+            unavailableSourceCount: sources.unavailableCount,
+          };
+          const estimateStartedAt = performance.now();
+          const appliesComplimentaryGate = shouldApplyComplimentaryGate({
+            provider,
+            apiKey,
+          });
+          estimate = await estimateGenerationCost({
+            provider,
+            model,
+            analysisModel,
+            sourceFiles: sources.text,
+            fileTree: context.fileTree,
+            readme: context.readme,
+            username,
+            repo,
+            apiKey,
+            preferExactInputTokenCount: shouldUseExactInputTokenCount({
+              provider,
+              apiKey,
+            }),
+            signal: generationAbortController.signal,
+            clientRequestId: `${audit.sessionId}:estimate`,
+            includeGraphRepairInputTokens: appliesComplimentaryGate,
+          });
+          recordTiming("estimate", estimateStartedAt);
+          const tokenCount = estimate.explanationInputTokens;
+
+          audit = withStageUsage(
+            withEstimatedCost(
+              {
+                ...audit,
+                provider,
+                model,
+              },
+              estimate.costSummary,
+            ),
+            {
+              stage: "estimate",
+              model,
+              costSummary: estimate.costSummary,
+              createdAt: new Date().toISOString(),
+            },
+          );
+
+          send({
+            status: "started",
+            session_id: audit.sessionId,
+            message: "Starting generation process...",
+            cost_summary: estimate.costSummary,
+          });
+
+          throwIfAborted(generationAbortController.signal);
+          if (tokenCount >= MAX_GENERATION_INPUT_TOKENS) {
+            const error = REPOSITORY_TOO_LARGE_ERROR;
+            audit = withFailure(audit, {
+              failureStage: "started",
+              validationError: error,
+            });
+            queueTerminal({
+              status: "error",
+              session_id: audit.sessionId,
+              error,
+              error_code: "TOKEN_LIMIT_EXCEEDED",
+              validation_error: error,
+              failure_stage: "started",
+              cost_summary: audit.finalCost ?? audit.estimatedCost,
+              latest_session_audit: audit,
+            });
+            return;
+          }
+
+          let complimentaryEstimate: ComplimentaryAdmissionEstimate | null =
+            null;
+          if (appliesComplimentaryGate) {
+            if (estimate.graphRepairStaticInputTokens === null) {
+              throw new Error(
+                "Complimentary quota estimation is missing graph repair input.",
+              );
+            }
+            complimentaryEstimate = {
+              explanationInputTokens: estimate.explanationInputTokens,
+              graphStaticInputTokens: estimate.graphStaticInputTokens,
+              graphRepairStaticInputTokens:
+                estimate.graphRepairStaticInputTokens,
+            };
+            const requestedTokens = buildComplimentaryAdmissionTokens(
+              complimentaryEstimate,
+            );
+            const reservation = await admitComplimentaryQuota({
+              model,
+              requestedTokens,
+            });
+
+            if (!reservation.admitted) {
+              const error =
+                reservation.message || getComplimentaryDenialMessage();
+              audit = withFailure(
+                {
+                  ...audit,
+                  quotaStatus: "denied",
+                  quotaResetAt: reservation.quotaResetAt,
+                },
+                {
+                  failureStage: "started",
+                  validationError: error,
+                },
+              );
+              queueTerminal({
+                status: "error",
+                session_id: audit.sessionId,
+                error,
+                error_code: "DAILY_FREE_TOKEN_LIMIT_REACHED",
+                failure_stage: "started",
+                validation_error: error,
+                quota_reset_at: reservation.quotaResetAt,
+                cost_summary: audit.finalCost ?? audit.estimatedCost,
+                latest_session_audit: audit,
+              });
+              return;
+            }
+
+            quotaReservation = reservation.reservation;
+            audit = {
+              ...audit,
+              quotaStatus: "admitted",
+              quotaBucket: quotaReservation.quotaBucket,
+              quotaDateUtc: quotaReservation.quotaDateUtc,
+              quotaResetAt: quotaReservation.quotaResetAt,
+            };
+          }
+
+          audit = withTimelineEvent(
+            audit,
+            "explanation_sent",
+            `Sending explanation request to ${model}...`,
+          );
+          send({
+            status: "explanation_sent",
+            session_id: audit.sessionId,
+            message: `Sending explanation request to ${analysisModel}...`,
+          });
+          throwIfAborted(generationAbortController.signal);
+
+          audit = withTimelineEvent(
+            audit,
+            "explanation",
+            "Analyzing repository structure...",
+          );
+          send({
+            status: "explanation",
+            session_id: audit.sessionId,
+            source_file_count: sources.paths.length,
+            message: "Analyzing repository structure...",
+          });
+
+          let explanationResponse = "";
+          let streamedExplanationLength = 0;
+          let graphProgressAnnounced = false;
+          if (quotaReservation) {
+            await markComplimentaryQuotaStarted(quotaReservation);
+          }
+          const explanationInputTokens = estimate.explanationInputTokens;
+          const explanationStartedAt = performance.now();
+          let recordedFirstExplanationChunk = false;
+          await withSlowRequestRetry({
+            signal: generationAbortController.signal,
+            retryAfterMs: singlePass ? ARCHITECTURE_SLOW_RETRY_MS : undefined,
+            onRetry: async () => {
+              // Disconnecting a foreground response cancels it, but OpenAI
+              // does not return its partial usage. Keep that spend visible as
+              // an estimate and include it in quota settlement.
+              const interruptedCost = createCostSummary({
+                kind: "estimate",
+                approximate: true,
+                model: analysisModel,
+                usage: {
+                  inputTokens: explanationInputTokens,
+                  outputTokens: EXPLANATION_ESTIMATED_OUTPUT_TOKENS,
+                  totalTokens:
+                    explanationInputTokens +
+                    EXPLANATION_ESTIMATED_OUTPUT_TOKENS,
+                  cacheWriteTokens: explanationInputTokens,
+                  serviceTier: getGenerationServiceTier({
+                    provider,
+                    model: analysisModel,
+                    apiKey,
+                  }),
+                },
+                note: "Includes estimated usage for a cancelled slow request; the provider did not return its token usage.",
+              });
+              accounting.completedUnmeasuredTokenEstimate +=
+                interruptedCost.usage.totalTokens;
+              accounting.pendingModelRequestTokenEstimate = 0;
+              audit = withStageUsage(audit, {
+                stage: "explanation",
+                attempt: 1,
+                model: analysisModel,
+                costSummary: interruptedCost,
+                createdAt: new Date().toISOString(),
+              });
+              audit = withTimelineEvent(
+                audit,
+                "explanation",
+                "Retrying a slow model request...",
+              );
+              explanationResponse = "";
+              streamedExplanationLength = 0;
+              graphProgressAnnounced = false;
+              await send({
+                status: "explanation",
+                session_id: audit.sessionId,
+                explanation: "",
+                message: "Retrying a slow model request...",
+              });
+            },
+            run: async (signal, attempt) => {
+              accounting.pendingModelRequestTokenEstimate =
+                complimentaryEstimate
+                  ? buildComplimentaryStageTokenEstimate(
+                      complimentaryEstimate,
+                      {
+                        stage: "explanation",
+                      },
+                    )
+                  : 0;
+              const explanationStream = await streamCompletion({
+                provider,
+                model: analysisModel,
+                systemPrompt: singlePass
+                  ? SYSTEM_ARCHITECTURE_PROMPT
+                  : SYSTEM_FIRST_PROMPT,
+                ...(singlePass
+                  ? { outputSchema: architectureOutputSchema }
+                  : {}),
+                userPrompt: toTaggedMessage({
+                  file_tree: context.fileTree,
+                  readme: context.readme,
+                  source_files: sources.text,
+                }),
+                apiKey,
+                reasoningEffort: singlePass
+                  ? getArchitectureReasoningEffort(analysisModel)
+                  : EXPLANATION_REASONING_EFFORT,
+                textVerbosity: EXPLANATION_TEXT_VERBOSITY,
+                signal,
+                clientRequestId: `${audit.sessionId}:explanation${attempt === 1 ? "" : ":retry"}`,
+              });
+              for await (const chunk of coalesceTextChunks(
+                explanationStream.stream,
+              )) {
+                throwIfAborted(generationAbortController.signal);
+                explanationResponse += chunk;
+                const progress = singlePass
+                  ? readArchitectureProgress(explanationResponse)
+                  : null;
+                const visibleChunk = progress
+                  ? progress.text.slice(streamedExplanationLength)
+                  : chunk;
+                if (visibleChunk && !recordedFirstExplanationChunk) {
+                  recordTiming("explanation_first_chunk", explanationStartedAt);
+                  recordedFirstExplanationChunk = true;
+                }
+                if (visibleChunk)
+                  await send({
+                    status: "explanation_chunk",
+                    session_id: audit.sessionId,
+                    chunk: visibleChunk,
+                  });
+                if (progress)
+                  streamedExplanationLength = Math.max(
+                    streamedExplanationLength,
+                    progress.text.length,
+                  );
+                if (progress?.complete && !graphProgressAnnounced) {
+                  graphProgressAnnounced = true;
+                  audit = withTimelineEvent(
+                    audit,
+                    "graph",
+                    "Mapping repository architecture...",
+                  );
+                  await send({
+                    status: "graph",
+                    session_id: audit.sessionId,
+                    message: "Mapping repository architecture...",
+                  });
+                }
+              }
+              let explanationUsage: GenerationTokenUsage | null = null;
+              try {
+                explanationUsage = await explanationStream.usagePromise;
+              } catch {
+                accounting.hasCompleteMeasuredUsage = false;
+              }
+              if (explanationUsage) {
+                accounting.actualUsages.push(explanationUsage);
+                accounting.pendingModelRequestTokenEstimate = 0;
+                audit = withStageUsage(audit, {
+                  stage: "explanation",
+                  attempt,
+                  model: analysisModel,
+                  costSummary: createCostSummary({
+                    kind: "actual",
+                    model: analysisModel,
+                    usage: explanationUsage,
+                    approximate: false,
+                  }),
+                  createdAt: new Date().toISOString(),
+                });
+              } else {
+                accounting.hasCompleteMeasuredUsage = false;
+                accounting.completedUnmeasuredTokenEstimate +=
+                  accounting.pendingModelRequestTokenEstimate;
+                accounting.pendingModelRequestTokenEstimate = 0;
+              }
+            },
+          });
+          recordTiming(
+            singlePass ? "architecture" : "explanation",
+            explanationStartedAt,
+          );
+
+          const architecture = singlePass
+            ? architectureOutputSchema.parse(JSON.parse(explanationResponse))
+            : null;
+          const explanation =
+            architecture?.explanation ??
+            extractTaggedSection(explanationResponse, "explanation");
+          if (!explanation.trim()) {
+            throw new Error(
+              "OpenAI explanation generation returned no usable output.",
+            );
+          }
+          audit = withExplanation(audit, explanation);
+
+          const fileTreeLookup = buildFileTreeLookup(githubData.fileTree);
+          const graphResult = await generateValidatedGraph({
+            provider,
+            model,
+            apiKey,
+            sessionId: audit.sessionId,
+            explanation,
+            initialGraph: architecture
+              ? expandArchitectureGraph(architecture.graph)
+              : undefined,
+            fileTree: context.fileTree,
+            fileTreeLookup,
+            signal: generationAbortController.signal,
+            audit,
+            complimentaryEstimate,
+            accounting,
+            validationCategoryCounts: graphValidationCategoryCounts,
+            recordTiming,
+            send,
+          });
+          audit = graphResult.audit;
+          if (!graphResult.ok) {
+            audit = withFailure(audit, {
+              failureStage: "graph_validating",
+              validationError: graphResult.validationError,
+            });
+            queueTerminal({
+              status: "error",
+              session_id: audit.sessionId,
+              error:
+                "Graph generation remained invalid after retry attempts. Please retry generation.",
+              error_code: "GRAPH_VALIDATION_FAILED",
+              validation_error: graphResult.validationError,
+              failure_stage: "graph_validating",
+              cost_summary: audit.finalCost ?? audit.estimatedCost,
+              latest_session_audit: audit,
+            });
+            return;
+          }
+          const validGraph = graphResult.graph;
+
+          audit = withTimelineEvent(
+            audit,
+            "diagram_compiling",
+            "Compiling Mermaid diagram...",
+          );
+          send({
+            status: "diagram_compiling",
+            session_id: audit.sessionId,
+            message: "Compiling Mermaid diagram...",
+            graph: validGraph,
+            graph_attempts: audit.graphAttempts,
+          });
+
+          throwIfAborted(generationAbortController.signal);
+          const diagramCompileStartedAt = performance.now();
+          const diagram = compileDiagramGraph({
+            graph: validGraph,
+            username,
+            repo,
+            branch: githubData.defaultBranch,
+            pathTypes: githubData.pathTypes,
+          });
+          recordTiming("diagram_compile", diagramCompileStartedAt);
+          audit = withCompiledDiagram(audit, diagram);
+          send({
+            status: "diagram_compiling",
+            session_id: audit.sessionId,
+            message: "Compiled Mermaid diagram.",
+            graph: validGraph,
+            graph_attempts: audit.graphAttempts,
+            diagram,
+          });
+
+          const finalCost = createFinalGenerationCostSummary({
+            model,
+            estimate,
+            actualUsages: accounting.actualUsages,
+            stageUsages: audit.stageUsages,
+            hasCompleteMeasuredUsage: accounting.hasCompleteMeasuredUsage,
+            graphAttemptCount: audit.graphAttempts.length,
+          });
+          throwIfAborted(generationAbortController.signal);
+          audit = withFinalCost(audit, finalCost);
+          audit = withSuccess(
+            withTimelineEvent(
+              audit,
+              "complete",
+              "Diagram generation complete.",
+            ),
+          );
+          successfulDiagramState = {
+            stargazerCount: githubData.stargazerCount,
+            explanation,
+            graph: validGraph,
+            diagram,
+          };
+
+          queueTerminal({
+            status: "complete",
+            session_id: audit.sessionId,
+            cost_summary: audit.finalCost ?? audit.estimatedCost,
+            diagram,
+            explanation,
+            graph: validGraph,
+            generated_at: audit.updatedAt,
+          });
+        } catch (error) {
+          if (
+            generationAbortController.signal.aborted &&
+            abortCause === "client"
+          ) {
+            streamState.wasCancelled = true;
+            return;
+          }
+          accounting.hasCompleteMeasuredUsage = false;
+          const deadlineExceeded = abortCause === "deadline";
+          const rawMessage = deadlineExceeded
+            ? "Generation timed out. Please retry."
+            : error instanceof Error
+              ? error.message
+              : "Streaming generation failed.";
+          const normalized = deadlineExceeded
+            ? { message: rawMessage, errorCode: "GENERATION_TIMEOUT" }
+            : normalizeGenerationError({
+                provider: audit.provider,
+                apiKey,
+                githubPat,
+                message: rawMessage,
+                error,
+              });
+          if (normalized.message !== rawMessage) {
+            // The client and the persisted audit only ever see the normalized
+            // message, so this is the one place the original survives.
+            console.error(
+              JSON.stringify({
+                event: "generate.stream.error_redacted",
+                session_id: audit.sessionId,
+                error_code: normalized.errorCode,
+                raw_error: rawMessage.slice(0, 500),
+              }),
+            );
+          }
+          audit = withFailure(audit, {
+            failureStage: audit.stage || "started",
+            validationError: normalized.message,
+          });
+          queueTerminal({
+            status: "error",
+            session_id: audit.sessionId,
+            error: normalized.message,
+            error_code: normalized.errorCode,
+            failure_stage: audit.failureStage,
+            validation_error: audit.validationError,
+            cost_summary: audit.finalCost ?? audit.estimatedCost,
+            latest_session_audit: audit,
+          });
+        } finally {
+          const sendTerminal = async (
+            terminalAudit: typeof audit,
+            persistenceWarning?: string,
+          ) => {
+            clearInterval(heartbeat);
+            const finalTerminalPayload = terminalPayload;
+            if (!finalTerminalPayload || streamState.wasCancelled) {
+              return false;
+            }
+            return send(
+              {
+                ...finalTerminalPayload,
+                cost_summary:
+                  terminalAudit.finalCost ?? terminalAudit.estimatedCost,
+                latest_session_audit: toTerminalSessionAudit(terminalAudit),
+                ...(persistenceWarning
+                  ? { persistence_warning: persistenceWarning }
+                  : {}),
+              },
+              // Eligibility is checked again after backpressure clears because
+              // a deadline can fire while this terminal is already queued.
+              { allowDeadlineTerminal: true },
+            );
+          };
+
+          try {
+            audit = await finalizeGenerationStream({
+              abortCause,
+              accounting,
+              apiKey,
+              audit,
+              githubPat,
+              postResponseTasks,
+              quotaReservation,
+              rateLimitedClientIp,
+              rateLimitedWindowStartSeconds,
+              recordTiming,
+              repo,
+              repositoryVerified,
+              sendTerminal,
+              storageVisibility,
+              streamState,
+              successfulDiagramState,
+              username,
+            });
+          } finally {
+            clearInterval(heartbeat);
+            stopCancellationPolling();
+            request.signal.removeEventListener("abort", handleRequestAbort);
+            deadlineSignal.removeEventListener("abort", handleDeadline);
+            // Queued even when finalizing throws, so /admin never shows the
+            // job running forever. Sent after the response closes, while the
+            // function stays up for its post-response work.
+            const finishedAudit = audit;
+            postResponseTasks.push(() => {
+              const finishedCost =
+                finishedAudit.finalCost ?? finishedAudit.estimatedCost;
+              return emitLiveEvent({
+                kind: "diagram.finished",
+                repo: liveLabel,
+                outcome: streamState.wasCancelled
+                  ? "cancelled"
+                  : finishedAudit.status === "succeeded"
+                    ? "complete"
+                    : "error",
+                errorCode: terminalErrorCode,
+                ms: Math.round(performance.now() - invocationStartedAt),
+                costUsd: finishedCost?.amountUsd ?? null,
+                ...(liveStarted
+                  ? {
+                      job: {
+                        id: finishedAudit.sessionId,
+                        state: "end" as const,
+                      },
+                    }
+                  : {}),
+              });
+            });
+            await closeStream();
+          }
+
+          logGenerationFinished({
+            accounting,
+            audit,
+            graphValidationCategoryCounts,
+            invocationStartedAt,
+            stageTimingsMs,
+            storageVisibility,
+            streamState,
+            terminalErrorCode,
+          });
+        }
+      };
+
+      void run()
+        .catch((error: unknown) => {
+          console.error(
+            JSON.stringify({
+              event: "generate.stream.unhandled_failure",
+              session_id: sessionId,
+              error: error instanceof Error ? error.message : "Unknown error",
+            }),
+          );
+        })
+        .finally(resolveGenerationDone);
+    },
+    pull() {
+      notifyStreamPull();
+    },
+    cancel() {
+      streamState.streamClosed = true;
+      notifyStreamPull();
+      abortGeneration("client");
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+      "X-Content-Type-Options": "nosniff",
+      "X-Generation-Session-Id": sessionId,
+    },
+  });
+}

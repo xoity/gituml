@@ -1,0 +1,32 @@
+export const UML_TYPES = {
+  "use-case": "Use Case Diagram",
+  activity: "Activity Diagram",
+  class: "Class Diagram",
+  sequence: "Sequence Diagram",
+  state: "State Machine Diagram",
+  component: "Component Diagram",
+  deployment: "Deployment Diagram",
+  er: "ER Diagram",
+  "c4-context": "C4 System Context Diagram",
+  "c4-container": "C4 Container Diagram",
+  "data-flow": "Data Flow Diagram",
+  infrastructure: "Network / Infrastructure Diagram",
+  object: "Object Diagram",
+  package: "Package Diagram",
+  communication: "Communication Diagram",
+  bpmn: "BPMN",
+  timing: "Timing Diagram",
+  "data-pipeline": "Data Pipeline Diagram",
+} as const;
+
+export const UML_NOTATION: Partial<Record<keyof typeof UML_TYPES, string>> = {
+  "use-case": "Mermaid use-case projection",
+  activity: "Mermaid activity flowchart",
+  component: "Mermaid component projection",
+  deployment: "Mermaid deployment projection",
+  object: "Mermaid object snapshot projection",
+  package: "Mermaid package projection",
+  communication: "Mermaid numbered-message projection",
+  bpmn: "BPMN process projection, not BPMN 2.0 interchange",
+  timing: "Mermaid timing timeline, not native UML timing notation",
+};

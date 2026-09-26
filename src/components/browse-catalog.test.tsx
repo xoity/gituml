@@ -1,0 +1,531 @@
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import React from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { BrowseCatalog } from "~/components/browse-catalog";
+import { clearDiagramPreviewCacheForTest } from "~/components/browse-catalog-shared";
+import type {
+  BrowseIndexEntry,
+  BrowsePageResult,
+} from "~/features/browse/catalog";
+import { clearBrowsePageCacheForTest } from "~/features/browse/index-client";
+
+vi.mock("next/link", () => ({
+  default: ({
+    href,
+    children,
+    className,
+    // Next-only props such as prefetch are not valid DOM attributes.
+    prefetch: _prefetch,
+    ...props
+  }: {
+    href: string;
+    children: React.ReactNode;
+    className?: string;
+    prefetch?: boolean | null;
+  }) => (
+    <a href={href} className={className} {...props}>
+      {children}
+    </a>
+  ),
+}));
+
+vi.mock("~/components/browse-diagram-preview", () => ({
+  BrowseDiagramPreview: ({ repoLabel }: { repoLabel: string }) => (
+    <div data-testid="mermaid-preview">{repoLabel}</div>
+  ),
+}));
+
+vi.mock("~/components/mermaid-diagram", () => ({
+  default: () => null,
+}));
+
+function createBrowseResult(
+  items: BrowseIndexEntry[],
+  overrides: Partial<BrowsePageResult> = {},
+): BrowsePageResult {
+  return {
+    items,
+    total: overrides.total ?? items.length,
+    page: overrides.page ?? 1,
+    pageSize: overrides.pageSize ?? 20,
+    totalPages: overrides.totalPages ?? 1,
+    sort: overrides.sort ?? "recent_desc",
+    q: overrides.q ?? "",
+    minStars: overrides.minStars ?? 0,
+  };
+}
+
+function createEntry(
+  repo: string,
+  overrides: Partial<BrowseIndexEntry> = {},
+): BrowseIndexEntry {
+  return {
+    username: overrides.username ?? "vercel",
+    repo,
+    lastSuccessfulAt: overrides.lastSuccessfulAt ?? "2026-03-29T12:00:00.000Z",
+    stargazerCount: overrides.stargazerCount ?? 130000,
+  };
+}
+
+describe("BrowseCatalog", () => {
+  let getEntriesByTypeSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof vi.spyOn> | undefined;
+  let previewFetches = 0;
+  let previewRequestInits: Array<RequestInit | undefined> = [];
+
+  const createMatchMediaResult = (matches: boolean): MediaQueryList =>
+    ({
+      addEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+      matches,
+      media: "",
+      onchange: null,
+      removeEventListener: vi.fn(),
+    }) as unknown as MediaQueryList;
+
+  function mockFetch(
+    resolveBrowseResult: (
+      url: URL,
+    ) => BrowsePageResult | null | Promise<BrowsePageResult | null>,
+  ) {
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input, init) => {
+      const rawUrl =
+        typeof input === "string"
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input);
+      const url = new URL(rawUrl, "https://gituml.example");
+
+      if (url.pathname === "/api/diagram-preview") {
+        previewFetches += 1;
+        previewRequestInits.push(init);
+        return Promise.resolve(
+          new Response(JSON.stringify({ diagram: "flowchart TD\nA-->B" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+
+      return Promise.resolve(resolveBrowseResult(url)).then(
+        (result) =>
+          new Response(result ? JSON.stringify(result) : "", {
+            status: result ? 200 : 404,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+    });
+  }
+
+  function createDeferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((promiseResolve) => {
+      resolve = promiseResolve;
+    });
+
+    return { promise, resolve };
+  }
+
+  async function flushPromises() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  afterEach(() => {
+    cleanup();
+    clearBrowsePageCacheForTest();
+    clearDiagramPreviewCacheForTest();
+    getEntriesByTypeSpy?.mockRestore();
+    fetchSpy?.mockRestore();
+    previewFetches = 0;
+    previewRequestInits = [];
+    vi.useRealTimers();
+    window.sessionStorage.clear();
+  });
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/browse");
+    window.scrollTo = vi.fn();
+    window.matchMedia = vi
+      .fn()
+      .mockImplementation(() => createMatchMediaResult(false));
+    getEntriesByTypeSpy = vi
+      .spyOn(window.performance, "getEntriesByType")
+      .mockReturnValue([]);
+  });
+
+  it("does not show the updating indicator for fast search results", async () => {
+    const acmeEntry = createEntry("demo", {
+      username: "acme",
+      stargazerCount: 20,
+    });
+    const allEntries = [createEntry("next.js"), acmeEntry];
+    mockFetch((url) => {
+      const q = url.searchParams.get("q") ?? "";
+      const items = q === "acme" ? [acmeEntry] : allEntries;
+      return createBrowseResult(items, { q });
+    });
+
+    render(<BrowseCatalog initialQuery={{}} />);
+
+    expect(await screen.findByText("vercel/next.js")).toBeInTheDocument();
+
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: "acme" },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4999);
+    });
+    await flushPromises();
+
+    expect(screen.queryByText("Updating results...")).not.toBeInTheDocument();
+    expect(screen.getByText("acme/demo")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(screen.queryByText("Updating results...")).not.toBeInTheDocument();
+  });
+
+  it("renders server-provided results without a hydration fetch", async () => {
+    const initialResult = createBrowseResult([createEntry("next.js")]);
+    mockFetch(() => initialResult);
+
+    render(<BrowseCatalog initialQuery={{}} initialResult={initialResult} />);
+
+    expect(screen.getByText("vercel/next.js")).toBeInTheDocument();
+    await flushPromises();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("debounces rapid search input into one catalog request", async () => {
+    const initialResult = createBrowseResult([createEntry("next.js")]);
+    const acmeResult = createBrowseResult([
+      createEntry("demo", { username: "acme" }),
+    ]);
+    mockFetch(() => acmeResult);
+    vi.useFakeTimers();
+
+    render(<BrowseCatalog initialQuery={{}} initialResult={initialResult} />);
+
+    const searchbox = screen.getByRole("searchbox");
+    fireEvent.change(searchbox, { target: { value: "a" } });
+    fireEvent.change(searchbox, { target: { value: "ac" } });
+    fireEvent.change(searchbox, { target: { value: "acme" } });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(149);
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await flushPromises();
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(screen.getByText("acme/demo")).toBeInTheDocument();
+  });
+
+  it("shows the updating indicator only after search results stay pending for five seconds", async () => {
+    const slowResult = createDeferred<BrowsePageResult | null>();
+
+    mockFetch((url) => {
+      const q = url.searchParams.get("q") ?? "";
+
+      if (q === "slow") {
+        return slowResult.promise;
+      }
+
+      return createBrowseResult([createEntry("next.js")], { q });
+    });
+
+    render(<BrowseCatalog initialQuery={{}} />);
+
+    expect(await screen.findByText("vercel/next.js")).toBeInTheDocument();
+
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: "slow" },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4999);
+    });
+
+    expect(screen.queryByText("Updating results...")).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(screen.getByText("Updating results...")).toBeInTheDocument();
+
+    slowResult.resolve(
+      createBrowseResult([createEntry("slow-repo")], { q: "slow" }),
+    );
+    await flushPromises();
+
+    expect(screen.getByText("vercel/slow-repo")).toBeInTheDocument();
+    expect(screen.queryByText("Updating results...")).not.toBeInTheDocument();
+  });
+
+  it("renders an empty state when no browse results match", async () => {
+    mockFetch(() => createBrowseResult([], { total: 0 }));
+
+    render(<BrowseCatalog initialQuery={{}} />);
+
+    expect(
+      await screen.findByText("No diagrams match these filters"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Open Diagram")).not.toBeInTheDocument();
+  });
+
+  it("fetches server search results as the user types and removes apply/reset controls", async () => {
+    const acmeEntry = createEntry("demo", {
+      username: "acme",
+      stargazerCount: 20,
+    });
+    const allEntries = [createEntry("next.js"), acmeEntry];
+    mockFetch((url) => {
+      const q = url.searchParams.get("q") ?? "";
+      const items = q === "acme" ? [acmeEntry] : allEntries;
+      return createBrowseResult(items, { q });
+    });
+
+    render(<BrowseCatalog initialQuery={{}} />);
+
+    expect(await screen.findByText("vercel/next.js")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Apply" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Reset" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: "acme" },
+    });
+
+    const acmeRow = await screen.findByText("acme/demo");
+
+    expect(acmeRow.closest("tr")).not.toBeNull();
+    expect(
+      within(acmeRow.closest("tr")!).getByRole("link", {
+        name: "Open Diagram",
+      }),
+    ).toHaveAttribute("href", "/acme/demo");
+    await waitFor(() => {
+      expect(screen.queryByText("vercel/next.js")).not.toBeInTheDocument();
+    });
+    expect(window.location.search).toBe("?q=acme");
+  });
+
+  it("uses server pagination and preserves filters in the URL", async () => {
+    mockFetch((url) => {
+      const page = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
+      return createBrowseResult([createEntry(`repo-${page === 1 ? 1 : 21}`)], {
+        page,
+        total: 60,
+        totalPages: 3,
+        q: "vercel",
+        sort: "stars_desc",
+        minStars: 100,
+      });
+    });
+
+    render(
+      <BrowseCatalog
+        initialQuery={{
+          q: "vercel",
+          sort: "stars_desc",
+          minStars: 100,
+          page: "2",
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("Page 2 of 3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+
+    expect(await screen.findByText("Page 1 of 3")).toBeInTheDocument();
+    expect(window.location.search).toBe(
+      "?q=vercel&sort=stars_desc&minStars=100",
+    );
+    const firstRow = screen.getByText("vercel/repo-1").closest("tr");
+
+    expect(firstRow).not.toBeNull();
+    expect(
+      within(firstRow!).getByRole("link", { name: "Open Diagram" }),
+    ).toHaveAttribute("href", "/vercel/repo-1");
+    expect(screen.queryByTestId("mermaid-preview")).not.toBeInTheDocument();
+  });
+
+  it("restores the last browse state on browser back when the URL returns bare", async () => {
+    window.sessionStorage.setItem(
+      "gituml:browse-query",
+      JSON.stringify({
+        q: "vercel",
+        sort: "stars_desc",
+        minStars: 100,
+        page: 2,
+      }),
+    );
+    getEntriesByTypeSpy.mockReturnValue([
+      { type: "back_forward" } as PerformanceNavigationTiming,
+    ]);
+    mockFetch(() =>
+      createBrowseResult([createEntry("repo-21")], {
+        page: 2,
+        total: 40,
+        totalPages: 2,
+        q: "vercel",
+        sort: "stars_desc",
+        minStars: 100,
+      }),
+    );
+
+    render(<BrowseCatalog initialQuery={{}} />);
+
+    expect(await screen.findByRole("searchbox")).toHaveValue("vercel");
+    expect(screen.getByDisplayValue("Most Stars")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("100+")).toBeInTheDocument();
+    expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
+    expect(window.location.search).toBe(
+      "?q=vercel&sort=stars_desc&minStars=100&page=2",
+    );
+  });
+
+  it("prefers the live URL page over stale initial query state on mount", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/browse?q=vercel&sort=stars_desc&minStars=100&page=2",
+    );
+    mockFetch(() =>
+      createBrowseResult([createEntry("repo-21")], {
+        page: 2,
+        total: 40,
+        totalPages: 2,
+        q: "vercel",
+        sort: "stars_desc",
+        minStars: 100,
+      }),
+    );
+
+    render(
+      <BrowseCatalog
+        initialQuery={{
+          q: "vercel",
+          sort: "stars_desc",
+          minStars: 100,
+          page: "1",
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
+  });
+
+  it("opens a desktop hover preview for repository cell hover and reuses cached data", async () => {
+    window.matchMedia = vi
+      .fn()
+      .mockImplementation(() => createMatchMediaResult(true));
+    mockFetch(() => createBrowseResult([createEntry("next.js")]));
+
+    render(<BrowseCatalog initialQuery={{}} />);
+
+    const repoCell = (await screen.findByText("vercel/next.js")).closest("td");
+
+    expect(repoCell).not.toBeNull();
+    vi.useFakeTimers();
+
+    await act(async () => {
+      fireEvent.mouseEnter(repoCell!, { clientX: 120, clientY: 140 });
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    await Promise.resolve();
+
+    expect(previewFetches).toBe(1);
+    expect(previewRequestInits[0]).toEqual(
+      expect.objectContaining({
+        credentials: "omit",
+        method: "GET",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+
+    fireEvent.mouseLeave(repoCell!);
+
+    await act(async () => {
+      fireEvent.mouseEnter(repoCell!, { clientX: 160, clientY: 180 });
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    await Promise.resolve();
+
+    expect(previewFetches).toBe(1);
+  });
+
+  it("uses preloaded default preview diagrams without fetching on hover", async () => {
+    window.matchMedia = vi
+      .fn()
+      .mockImplementation(() => createMatchMediaResult(true));
+    mockFetch(() => createBrowseResult([createEntry("next.js")]));
+
+    render(
+      <BrowseCatalog
+        initialPreviewDiagrams={{
+          "vercel/next.js": "flowchart TD\nA-->B",
+        }}
+        initialQuery={{}}
+      />,
+    );
+
+    const repoCell = (await screen.findByText("vercel/next.js")).closest("td");
+
+    expect(repoCell).not.toBeNull();
+    vi.useFakeTimers();
+
+    await act(async () => {
+      fireEvent.mouseEnter(repoCell!, { clientX: 120, clientY: 140 });
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    await Promise.resolve();
+
+    expect(previewFetches).toBe(0);
+  });
+
+  it("renders the repository name as text and keeps diagram navigation on the action button", async () => {
+    mockFetch(() => createBrowseResult([createEntry("next.js")]));
+
+    render(<BrowseCatalog initialQuery={{}} />);
+
+    const repoRow = (await screen.findByText("vercel/next.js")).closest("tr");
+
+    expect(
+      screen.queryByRole("link", { name: "vercel/next.js" }),
+    ).not.toBeInTheDocument();
+    expect(repoRow).not.toBeNull();
+    expect(
+      within(repoRow!).getByRole("link", { name: "Open Diagram" }),
+    ).toHaveAttribute("href", "/vercel/next.js");
+  });
+});
