@@ -1,0 +1,73 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+.bun-debug.log*
+*.log
+
+# local env files
+# do not commit any .env files to git, except for the .env.example file. https://create.t3.gg/en/usage/env-variables#using-environment-variables
+.env
+.env*.local
+.env-e
+
+# vercel
+.vercel
+
+# cloudflare wrangler local state
+.wrangler/
+
+# local tool state
+/.agents/
+/.railway/
+/.ruff_cache/
+
+# typescript
+*.tsbuildinfo
+
+# idea files
+.idea
+
+# Claude Code worktrees
+.claude/
+
+# Playwright MCP local artifacts
+.playwright-mcp/
+
+# temporary files
+/tmp/
+/animation-plans/
+/animation-audits/
+/example-previews/
+/example-generation-previews/
+/migration-backups/
+/scripts/local/
+
+__pycache__/
+venv
+.venv
+
+# vscode
+.vscode/
+
+# local explainer video artifacts (development)
+.video-cache/
