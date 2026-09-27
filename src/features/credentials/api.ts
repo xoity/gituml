@@ -1,8 +1,6 @@
-export type CredentialKind =
-  "openai_api_key" | "opencode_api_key" | "github_pat";
+export type CredentialKind = "openai_api_key" | "github_pat";
 
 export interface CredentialStatus {
-  opencodeApiKeyConfigured?: boolean;
   openaiApiKeyConfigured: boolean;
   githubPatConfigured: boolean;
 }
@@ -19,11 +17,10 @@ interface CredentialResponse {
 
 const CREDENTIAL_KINDS = ["openai_api_key", "github_pat"] as const;
 const LEGACY_STORAGE_KEYS: Record<CredentialKind, string> = {
-  opencode_api_key: "gituml_opencode_api_key",
   openai_api_key: "openai_api_key",
   github_pat: "github_pat",
 };
-const CREDENTIAL_MUTATION_LOCK = "gituml-credential-mutation";
+const CREDENTIAL_MUTATION_LOCK = "gitdiagram-credential-mutation";
 
 let legacyMigrationPromise: Promise<boolean> | undefined;
 

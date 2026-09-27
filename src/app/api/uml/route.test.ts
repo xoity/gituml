@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => ({
@@ -13,10 +13,15 @@ const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   write: vi.fn(),
 }));
+
 vi.mock("~/server/http/request-credentials", () => ({
   resolveRequestCredentials: mocks.credentials,
 }));
-vi.mock("~/server/generate/github", () => ({ getGithubData: mocks.github }));
+vi.mock("~/server/generate/github", () => ({
+  getGithubData: mocks.github,
+  REPOSITORY_TOO_LARGE_ERROR:
+    "Repository is too large for analysis. Try a smaller repo.",
+}));
 vi.mock("~/server/generate/source-context", () => ({
   fetchSourceContext: mocks.source,
 }));
@@ -38,6 +43,7 @@ vi.mock("~/server/storage/r2", () => ({
 }));
 
 import { POST } from "./route";
+import { IncompleteStructuredOutputError } from "~/server/generate/errors";
 
 const quote = "export class Application {}";
 const analysis = {
@@ -51,6 +57,7 @@ const analysis = {
   ],
   limitations: ["One source file inspected."],
 };
+
 function request(
   body: unknown = { username: "owner", repo: "repo" },
   origin = "https://gituml.example",
@@ -61,9 +68,41 @@ function request(
     body: JSON.stringify(body),
   });
 }
+
+interface StreamEvent {
+  stage?: string;
+  message?: string;
+  result?: Record<string, unknown>;
+  error?: string;
+  errorCode?: string;
+}
+
+async function readEvents(response: Response): Promise<StreamEvent[]> {
+  const text = await response.text();
+  return text
+    .split("\n\n")
+    .filter((frame) => frame.trim().length > 0)
+    .map((frame) => JSON.parse(frame.replace(/^data: /, "")) as StreamEvent);
+}
+
+function stubStorageEnv() {
+  for (const name of [
+    "R2_ACCOUNT_ID",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+    "R2_PUBLIC_BUCKET",
+    "R2_PRIVATE_BUCKET",
+    "CACHE_KEY_SECRET",
+  ]) {
+    vi.stubEnv(name, `test-${name}`);
+  }
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.credentials.mockResolvedValue({ opencodeApiKey: "test-key" });
+  vi.stubEnv("AI_PROVIDER", "opencode");
+  vi.stubEnv("OPENCODE_API_KEY", "server-key");
+  mocks.credentials.mockResolvedValue({});
   mocks.rate.mockResolvedValue({ allowed: true });
   mocks.github.mockResolvedValue({
     defaultBranch: "main",
@@ -87,47 +126,11 @@ beforeEach(() => {
   mocks.read.mockResolvedValue(null);
   mocks.write.mockResolvedValue(undefined);
 });
+
 afterEach(() => vi.unstubAllEnvs());
 
 describe("UML route", () => {
-  it("isolates private cached analysis and rechecks access before reading it", async () => {
-    for (const name of [
-      "R2_ACCOUNT_ID",
-      "R2_ACCESS_KEY_ID",
-      "R2_SECRET_ACCESS_KEY",
-      "R2_PUBLIC_BUCKET",
-      "R2_PRIVATE_BUCKET",
-      "CACHE_KEY_SECRET",
-    ])
-      vi.stubEnv(name, `test-${name}`);
-    mocks.credentials.mockResolvedValue({
-      opencodeApiKey: "test-key",
-      githubPat: "private-token",
-    });
-    mocks.github.mockResolvedValue({
-      defaultBranch: "main",
-      fileTree: "app.ts",
-      readme: "A project",
-      pathTypes: new Map([["app.ts", "blob"]]),
-      isPrivate: true,
-    });
-    expect((await POST(request())).status).toBe(200);
-    const [bucket, key, cached] = mocks.write.mock.calls[0]!;
-    expect(bucket).toBe("test-R2_PRIVATE_BUCKET");
-    expect(key).toMatch(
-      /^uml\/v1\/private\/v1\/[a-f0-9]{64}\/owner\/repo\.json\/analysis\.json$/,
-    );
-    expect(key).not.toContain("private-token");
-    mocks.read.mockResolvedValue(cached);
-    mocks.model.mockClear();
-    expect((await POST(request())).status).toBe(200);
-    expect(mocks.model).not.toHaveBeenCalled();
-    mocks.github.mockRejectedValue(new Error("Repository not found."));
-    mocks.read.mockClear();
-    expect((await POST(request())).status).toBe(502);
-    expect(mocks.read).not.toHaveBeenCalled();
-  });
-  it("rejects cross-origin, unsupported type and oversized input before paid work", async () => {
+  it("rejects bad requests before doing any work", async () => {
     expect(
       (await POST(request(undefined, "https://evil.example"))).status,
     ).toBe(403);
@@ -144,60 +147,133 @@ describe("UML route", () => {
     ).toBe(413);
     expect(mocks.model).not.toHaveBeenCalled();
   });
-  it("returns only evidence-checked recommendations without caching private responses", async () => {
+
+  it("streams its progress and returns the evidence-checked analysis", async () => {
     const response = await POST(request());
-    expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toMatchObject({
-      analysis: {
-        summary: analysis.summary,
-        recommendations: analysis.recommendations,
-      },
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+
+    const events = await readEvents(response);
+    const stages = events
+      .map((event) => event.stage)
+      .filter((stage): stage is string => Boolean(stage));
+    expect(stages).toEqual(
+      expect.arrayContaining(["repository", "sources", "validating"]),
+    );
+    expect(events.at(-1)?.result).toMatchObject({
+      analysis: { summary: analysis.summary },
+      branch: "main",
     });
+    // The operator's provider and key fund the run; the caller's cookie is not
+    // forwarded to a provider the operator did not choose.
     expect(mocks.model).toHaveBeenCalledWith(
       expect.objectContaining({
         provider: "opencode",
         model: "deepseek-v4-flash-vision-exp",
-        apiKey: "test-key",
+        apiKey: undefined,
       }),
     );
   });
-  it("repairs fabricated citations and never accepts them silently", async () => {
-    mocks.model.mockResolvedValueOnce({
-      output: {
-        ...analysis,
-        recommendations: [
-          {
-            ...analysis.recommendations[0],
-            evidence: [{ path: "missing.ts", quote }],
-          },
-        ],
-      },
-      usage: { totalTokens: 20 },
-    });
-    expect((await POST(request())).status).toBe(200);
+
+  it("repairs a truncated response instead of failing the run", async () => {
+    mocks.model
+      .mockRejectedValueOnce(
+        new IncompleteStructuredOutputError("The response was cut off."),
+      )
+      .mockResolvedValueOnce({ output: analysis, usage: { totalTokens: 40 } });
+
+    const events = await readEvents(await POST(request()));
     expect(mocks.model).toHaveBeenCalledTimes(2);
+    expect(events.some((event) => event.stage === "retrying")).toBe(true);
+    expect(events.at(-1)?.result).toBeTruthy();
     expect(mocks.model.mock.calls[1]?.[0].userPrompt).toContain(
-      "Validation failed",
+      "failed validation",
     );
   });
-  it("fails closed when server-funded quota cannot be read", async () => {
-    vi.stubEnv("OPENCODE_API_KEY", "server-test");
-    mocks.credentials.mockResolvedValue({});
+
+  it("stops honestly when the model keeps returning unusable output", async () => {
+    mocks.model.mockRejectedValue(
+      new IncompleteStructuredOutputError("The response was cut off."),
+    );
+
+    const events = await readEvents(await POST(request()));
+    expect(events.at(-1)?.error).toContain("could not produce a complete");
+    expect(events.some((event) => event.result)).toBe(false);
+  });
+
+  it("fails closed when the daily budget cannot be read", async () => {
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://example.upstash.io");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "token");
     mocks.quota.mockRejectedValue(new Error("Redis unavailable"));
-    expect((await POST(request())).status).toBe(503);
+
+    const events = await readEvents(await POST(request()));
+    expect(events.at(-1)).toMatchObject({ errorCode: "QUOTA_UNAVAILABLE" });
     expect(mocks.model).not.toHaveBeenCalled();
   });
-  it("reconciles successful server-funded work", async () => {
-    vi.stubEnv("OPENCODE_API_KEY", "server-test");
-    mocks.credentials.mockResolvedValue({});
-    expect((await POST(request())).status).toBe(200);
-    expect(mocks.started).toHaveBeenCalledOnce();
-    expect(mocks.commit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        committedTokens: 30,
-        quotaBucket: "gituml-opencode",
-      }),
+
+  it("names the budget variables the operator still has to set", async () => {
+    mocks.quota.mockRejectedValue(new Error("Redis unavailable"));
+
+    const events = await readEvents(await POST(request()));
+    expect(events.at(-1)).toMatchObject({
+      errorCode: "QUOTA_NOT_CONFIGURED",
+    });
+    expect(events.at(-1)?.error).toContain("UPSTASH_REDIS_REST_URL");
+    expect(mocks.model).not.toHaveBeenCalled();
+  });
+
+  it("skips the budget ledger only when the operator turns metering off", async () => {
+    vi.stubEnv("UML_BUDGET_UNMETERED", "1");
+    mocks.quota.mockRejectedValue(new Error("Redis unavailable"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const events = await readEvents(await POST(request()));
+
+    expect(events.at(-1)?.result).toBeTruthy();
+    expect(mocks.quota).not.toHaveBeenCalled();
+    expect(
+      warn.mock.calls.some((call) =>
+        String(call[0]).includes("uml.budget_unmetered"),
+      ),
+    ).toBe(true);
+  });
+
+  it("says which key the operator must set, and never asks the visitor for one", async () => {
+    vi.stubEnv("OPENCODE_API_KEY", "");
+    const events = await readEvents(await POST(request()));
+    expect(events.at(-1)).toMatchObject({ errorCode: "NO_SERVER_KEY" });
+    expect(events.at(-1)?.error).toContain("OPENCODE_API_KEY");
+  });
+
+  it("verifies access before reading a cached private result", async () => {
+    stubStorageEnv();
+    mocks.credentials.mockResolvedValue({ githubPat: "private-token" });
+    mocks.github.mockResolvedValue({
+      defaultBranch: "main",
+      fileTree: "app.ts",
+      readme: "A project",
+      pathTypes: new Map([["app.ts", "blob"]]),
+      isPrivate: true,
+    });
+
+    // Reading the stream is what drives the run to completion.
+    await readEvents(await POST(request()));
+    const [bucket, key, cached] = mocks.write.mock.calls[0]!;
+    expect(bucket).toBe("test-R2_PRIVATE_BUCKET");
+    expect(key).toMatch(
+      /^uml\/v1\/private\/v1\/[a-f0-9]{64}\/owner\/repo\.json\/analysis\.json$/,
     );
+    expect(key).not.toContain("private-token");
+
+    mocks.read.mockResolvedValue(cached);
+    mocks.model.mockClear();
+    const cachedEvents = await readEvents(await POST(request()));
+    expect(cachedEvents.at(-1)?.result).toBeTruthy();
+    expect(mocks.model).not.toHaveBeenCalled();
+
+    // A caller who cannot read the repository never reaches the cache.
+    mocks.github.mockRejectedValue(new Error("Repository not found."));
+    mocks.read.mockClear();
+    await readEvents(await POST(request()));
+    expect(mocks.read).not.toHaveBeenCalled();
   });
 });

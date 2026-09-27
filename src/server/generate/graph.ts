@@ -87,6 +87,18 @@ export function parseDiagramGraph(rawOutput: string): {
   }
 }
 
+/**
+ * The README is inspected as evidence under the synthetic path "README" (the
+ * analysis prompt names it that way), and the compiler links it to the
+ * repository's #readme anchor. It is therefore a valid node link even though it
+ * is not a path in the file tree.
+ */
+const README_EVIDENCE_PATH = "README";
+
+function isLinkablePath(path: string, fileTreeLookup: Set<string>): boolean {
+  return path === README_EVIDENCE_PATH || fileTreeLookup.has(path);
+}
+
 export function validateDiagramGraph(
   graph: DiagramGraph,
   fileTreeLookup: Set<string>,
@@ -130,7 +142,7 @@ export function validateDiagramGraph(
       );
     }
 
-    if (node.path && !fileTreeLookup.has(node.path)) {
+    if (node.path && !isLinkablePath(node.path, fileTreeLookup)) {
       issues.push(
         buildIssue(
           "missing_repository_path",
@@ -185,7 +197,7 @@ export function stripUnknownNodePaths(
 ): { graph: DiagramGraph; strippedPathCount: number } {
   let strippedPathCount = 0;
   const nodes = graph.nodes.map((node) => {
-    if (node.path && !fileTreeLookup.has(node.path)) {
+    if (node.path && !isLinkablePath(node.path, fileTreeLookup)) {
       strippedPathCount += 1;
       return { ...node, path: null };
     }

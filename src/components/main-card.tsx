@@ -7,18 +7,14 @@ import { Input } from "~/components/ui/input";
 import { Button } from "~/components/ui/button";
 import { exampleRepos } from "~/lib/exampleRepos";
 import { parseGitHubRepoUrl } from "~/features/diagram/github-url";
-import { saveCredential } from "~/features/credentials/api";
 
 /** The home page's repository form, with example repositories. */
 export default function MainCard() {
   const [repoUrl, setRepoUrl] = useState("");
   const [error, setError] = useState("");
-  const [isPrivate, setIsPrivate] = useState(false);
-  const [token, setToken] = useState("");
-  const [saving, setSaving] = useState(false);
   const router = useRouter();
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
@@ -29,22 +25,6 @@ export default function MainCard() {
     }
 
     const { username, repo } = parsed;
-    if (isPrivate) {
-      if (!token.trim()) {
-        setError("Enter a GitHub token for this private repository.");
-        return;
-      }
-      setSaving(true);
-      try {
-        await saveCredential("github_pat", token.trim());
-        setToken("");
-      } catch {
-        setError("Could not save the GitHub token. Please retry.");
-        setSaving(false);
-        return;
-      }
-      setSaving(false);
-    }
     const sanitizedUsername = encodeURIComponent(username);
     const sanitizedRepo = encodeURIComponent(repo);
     router.push(`/${sanitizedUsername}/${sanitizedRepo}`);
@@ -74,7 +54,6 @@ export default function MainCard() {
           />
           <Button
             type="submit"
-            disabled={saving}
             className="neo-button size-14 shrink-0 p-0 text-base sm:h-10 sm:w-auto sm:p-6 sm:px-6 sm:text-lg [&_svg]:size-6"
           >
             <ArrowRight
@@ -84,55 +63,6 @@ export default function MainCard() {
             />
             <span className="max-sm:sr-only">Analyze</span>
           </Button>
-        </div>
-
-        <div className="space-y-3 text-sm">
-          <label className="flex w-fit items-center gap-2 font-medium">
-            <input
-              type="checkbox"
-              checked={isPrivate}
-              disabled={saving}
-              onChange={(event) => {
-                setIsPrivate(event.target.checked);
-                setToken("");
-              }}
-            />
-            Private repository
-          </label>
-          {isPrivate && (
-            <div className="space-y-2">
-              <label
-                htmlFor="private-repository-token"
-                className="block font-medium"
-              >
-                GitHub personal access token
-              </label>
-              <Input
-                id="private-repository-token"
-                type="password"
-                value={token}
-                onChange={(event) => setToken(event.target.value)}
-                required
-                autoComplete="off"
-                spellCheck={false}
-                className="ph-no-capture neo-input w-full"
-                disabled={saving}
-              />
-              <a
-                href="https://github.com/settings/personal-access-tokens/new?name=GitUML&contents=read&expires_in=30"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="neo-link underline"
-              >
-                Create token on GitHub
-              </a>
-              <p className="text-xs">
-                Select only this repository with Contents: Read-only. Your token
-                is saved in a protected browser cookie; repository excerpts are
-                sent to OpenCode Go.
-              </p>
-            </div>
-          )}
         </div>
 
         {error ? (

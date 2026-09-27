@@ -6,11 +6,7 @@ import { isSameOriginRequest } from "~/server/http/same-origin";
 export const CREDENTIAL_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 export const MAX_STORED_CREDENTIAL_BYTES = 2_048;
 
-export const credentialKindSchema = z.enum([
-  "openai_api_key",
-  "opencode_api_key",
-  "github_pat",
-]);
+export const credentialKindSchema = z.enum(["openai_api_key", "github_pat"]);
 export type CredentialKind = z.infer<typeof credentialKindSchema>;
 
 export const storedCredentialSchema = z
@@ -24,19 +20,16 @@ export const storedCredentialSchema = z
   );
 
 export interface CredentialStatus {
-  opencodeApiKeyConfigured?: boolean;
   openaiApiKeyConfigured: boolean;
   githubPatConfigured: boolean;
 }
 
 export interface RequestCredentials {
-  opencodeApiKey?: string;
   apiKey?: string;
   githubPat?: string;
 }
 
 const COOKIE_NAMES: Record<CredentialKind, string> = {
-  opencode_api_key: "gituml_opencode_api_key",
   openai_api_key: "gituml_openai_api_key",
   github_pat: "gituml_github_pat",
 };
@@ -65,9 +58,6 @@ function getStatus(
   cookieStore: Awaited<ReturnType<typeof cookies>>,
 ): CredentialStatus {
   return {
-    opencodeApiKeyConfigured: Boolean(
-      readCredential(cookieStore, "opencode_api_key"),
-    ),
     openaiApiKeyConfigured: Boolean(
       readCredential(cookieStore, "openai_api_key"),
     ),
@@ -111,9 +101,6 @@ export async function resolveRequestCredentials(
 
   const cookieStore = await cookies();
   return {
-    opencodeApiKey:
-      explicit.opencodeApiKey ??
-      readCredential(cookieStore, "opencode_api_key"),
     apiKey: explicit.apiKey ?? readCredential(cookieStore, "openai_api_key"),
     githubPat: explicit.githubPat ?? readCredential(cookieStore, "github_pat"),
   };

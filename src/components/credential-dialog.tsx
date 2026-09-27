@@ -18,13 +18,6 @@ import {
 import { Input } from "./ui/input";
 
 const CREDENTIAL_LABELS = {
-  opencode_api_key: {
-    noun: "key",
-    name: "API key",
-    inputLabel: "OpenCode Go API key",
-    placeholder: "Paste your OpenCode Go key",
-    saved: "Key saved. Paste a new one to replace it.",
-  },
   openai_api_key: {
     noun: "key",
     name: "API key",

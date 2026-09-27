@@ -114,7 +114,9 @@ async function readPublicSource(params: {
   const url = `https://raw.githubusercontent.com/${encodeURIComponent(params.username)}/${encodeURIComponent(params.repo)}/${encodeURIComponent(params.branch)}/${params.path.split("/").map(encodeURIComponent).join("/")}`;
   const response = await fetch(url, {
     signal: params.signal,
-    cache: "no-store",
+    // The bytes are checked against the blob SHA below, so a cached copy is
+    // safe and saves a full round trip per file on every repeat run.
+    cache: "force-cache",
     redirect: "error",
   });
   const bytes = await readBoundedBytes(response, MAX_SOURCE_FILE_BYTES);

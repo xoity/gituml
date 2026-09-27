@@ -9,6 +9,7 @@ vi.mock("~/server/github-auth", () => ({
 }));
 
 import {
+  clearIngestionCacheForTests,
   GITHUB_REQUEST_TIMEOUT_MS,
   getGithubData,
   MAX_README_BYTES,
@@ -52,6 +53,8 @@ function createGitHubFetch(
 describe("getGithubData repository input bounds", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    // The ingestion cache is process-wide; a case must not inherit another's.
+    clearIngestionCacheForTests();
     // The GitHub client logs structured JSON on failures and public fallbacks;
     // keep it out of the test output.
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -415,11 +418,52 @@ describe("getGithubData repository input bounds", () => {
       fileTree: "src/cached.ts",
       pathTypes: new Map([["src/cached.ts", "blob"]]),
     });
+    // The in-process ingestion cache would answer the second call outright, so
+    // clear it to exercise the HTTP revalidation this case is about.
+    clearIngestionCacheForTests();
     await expect(getGithubData("acme", "demo")).resolves.toMatchObject({
       fileTree: "src/cached.ts",
       pathTypes: new Map([["src/cached.ts", "blob"]]),
     });
     expect(treeRequests).toBe(2);
+  });
+
+  it("serves a repeat public read from the ingestion cache without touching GitHub", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/repos/acme/demo")) {
+        return jsonResponse({
+          default_branch: "main",
+          private: false,
+          stargazers_count: 42,
+        });
+      }
+      if (url.includes("/git/trees/main?recursive=1")) {
+        return new Response(
+          JSON.stringify({
+            truncated: false,
+            tree: [{ path: "src/cached.ts", type: "blob" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/repos/acme/demo/readme")) {
+        return jsonResponse({
+          size: 6,
+          content: Buffer.from("# Demo").toString("base64"),
+          encoding: "base64",
+        });
+      }
+      throw new Error(`Unexpected GitHub URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getGithubData("acme", "demo");
+    const callsAfterFirst = fetchMock.mock.calls.length;
+    await expect(getGithubData("acme", "demo")).resolves.toMatchObject({
+      fileTree: "src/cached.ts",
+    });
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
   });
 
   it("rejects private repository access without caller credentials before reading contents", async () => {

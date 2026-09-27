@@ -1,28 +1,112 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { FileSearch, Key, LockKeyhole, Play, Square } from "lucide-react";
-import dynamic from "next/dynamic";
-import { UML_TYPES, UML_NOTATION } from "~/features/diagram/uml-catalog";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Check,
+  ChevronDown,
+  CircleAlert,
+  ExternalLink,
+  Play,
+  RefreshCw,
+  Square,
+} from "lucide-react";
+import { GitHubIcon } from "~/components/icons/github-icon";
+import { UML_NOTATION, UML_TYPES } from "~/features/diagram/uml-catalog";
 import type { UmlAnalysis, UmlType } from "~/features/diagram/uml";
 import type { DiagramStreamState } from "~/features/diagram/types";
+import { ActivityMark } from "~/components/generation/activity-mark";
 import { RepositoryWorkspace } from "~/components/generation/repository-workspace";
-import { TooltipProvider } from "~/components/ui/tooltip";
 import { Toaster } from "~/components/ui/sonner";
+import { TooltipProvider } from "~/components/ui/tooltip";
 import styles from "~/components/generation/workspace.module.css";
 
-const ApiKeyDialog = dynamic(
-  () =>
-    import("~/components/api-key-dialog").then((module) => module.ApiKeyDialog),
-  { ssr: false },
-);
-const PrivateReposDialog = dynamic(
-  () =>
-    import("~/components/private-repos-dialog").then(
-      (module) => module.PrivateReposDialog,
-    ),
-  { ssr: false },
-);
+interface ProgressStep {
+  stage: string;
+  message: string;
+}
+
+interface ServerEvent {
+  stage?: string;
+  message?: string;
+  result?: unknown;
+  error?: string;
+}
+
+/**
+ * Reads the progress stream. Stage events are reported as they arrive so the
+ * panel can show where the run is; the terminal event is returned.
+ */
+async function readProgress(
+  response: Response,
+  onStep: (step: ProgressStep) => void,
+): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Generation failed unexpectedly. Please retry.");
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: unknown;
+  let failure: string | undefined;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const line = frame.split("\n").find((part) => part.startsWith("data: "));
+      if (line) {
+        const event = JSON.parse(line.slice(6)) as ServerEvent;
+        if (event.error) failure = event.error;
+        else if (event.result !== undefined) result = event.result;
+        else if (event.stage && event.message) {
+          onStep({ stage: event.stage, message: event.message });
+        }
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+
+  if (failure) throw new Error(failure);
+  if (result === undefined) {
+    throw new Error("Generation failed unexpectedly. Please retry.");
+  }
+  return result;
+}
+
+/**
+ * Validates the streamed payload against the same schemas the server used, so
+ * the client never renders something the server did not verify.
+ */
+async function parseResult(payload: unknown, type: UmlType | undefined) {
+  const [{ z }, { umlAnalysisSchema, umlDocumentSchema }] = await Promise.all([
+    import("zod"),
+    import("~/features/diagram/uml"),
+  ]);
+  const warning = z.object({ persistenceWarning: z.string().optional() });
+
+  if (!type) {
+    return z
+      .object({
+        analysis: umlAnalysisSchema,
+        branch: z.string(),
+        sourcePaths: z.array(z.string()),
+      })
+      .and(warning)
+      .parse(payload);
+  }
+
+  return z
+    .object({
+      document: umlDocumentSchema,
+      diagram: z.string().min(1).max(100_000),
+    })
+    .and(warning)
+    .parse(payload);
+}
 
 export function UmlWorkspace({
   username,
@@ -31,308 +115,380 @@ export function UmlWorkspace({
   username: string;
   repo: string;
 }) {
+  const repository = `${username}/${repo}`;
   const [analysis, setAnalysis] = useState<UmlAnalysis | null>(null);
   const [selected, setSelected] = useState<UmlType | "">("");
+  const [activeType, setActiveType] = useState<UmlType | "">("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [steps, setSteps] = useState<ProgressStep[]>([]);
+  const [elapsed, setElapsed] = useState(0);
   const [state, setState] = useState<DiagramStreamState>({ status: "idle" });
-  const [showKey, setShowKey] = useState(false);
-  const [showPrivate, setShowPrivate] = useState(false);
   const [lastGenerated, setLastGenerated] = useState<Date>();
   const [branch, setBranch] = useState("main");
-  const [activeType, setActiveType] = useState<UmlType | "">("");
   const controller = useRef<AbortController | null>(null);
   const results = useRef(
     new Map<UmlType, { state: DiagramStreamState; date: Date }>(),
   );
-  const repository = `${username}/${repo}`;
+
+  const run = useCallback(
+    async (requested?: UmlType, refresh = false) => {
+      controller.current?.abort();
+      const current = new AbortController();
+      controller.current = current;
+      setBusy(true);
+      setError("");
+      setSteps([]);
+      setElapsed(0);
+      if (requested) {
+        setActiveType(requested);
+        setState({ status: "started", startedAt: Date.now() });
+      }
+
+      try {
+        const response = await fetch("/api/uml", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username,
+            repo,
+            ...(requested ? { type: requested } : {}),
+            refresh,
+          }),
+          signal: current.signal,
+        });
+
+        const contentType = response.headers.get("content-type") ?? "";
+        if (!contentType.includes("text/event-stream")) {
+          const payload: unknown = await response.json().catch(() => null);
+          const { z } = await import("zod");
+          const failure = z.object({ error: z.string() }).safeParse(payload);
+          throw new Error(
+            failure.success
+              ? failure.data.error
+              : "Generation failed. Please retry.",
+          );
+        }
+
+        const payload = await readProgress(response, (step) => {
+          if (controller.current !== current) return;
+          setSteps((existing) => [...existing.slice(-6), step]);
+          if (requested) {
+            setState((previous) => ({
+              ...previous,
+              status: "started",
+              message: step.message,
+            }));
+          }
+        });
+        if (controller.current !== current) return;
+
+        const result = await parseResult(payload, requested);
+        const warning = result.persistenceWarning;
+
+        if (requested) {
+          const generated = result as {
+            diagram: string;
+            document: {
+              explanation: string;
+              graph: DiagramStreamState["graph"];
+            };
+          };
+          const next: DiagramStreamState = {
+            status: "complete",
+            diagram: generated.diagram,
+            explanation: generated.document.explanation,
+            graph: generated.document.graph,
+            persistenceWarning: warning,
+          };
+          const date = new Date();
+          results.current.set(requested, { state: next, date });
+          setState(next);
+          setLastGenerated(date);
+        } else {
+          const next = result as {
+            analysis: UmlAnalysis;
+            branch: string;
+          };
+          setAnalysis(next.analysis);
+          setBranch(next.branch);
+          setSelected(next.analysis.recommendations[0]?.type ?? "");
+          results.current.clear();
+          setActiveType("");
+          setState({ status: "idle", persistenceWarning: warning });
+        }
+      } catch (failure) {
+        if (controller.current !== current) return;
+        const message =
+          current.signal.aborted || failure instanceof DOMException
+            ? "Generation stopped."
+            : failure instanceof Error
+              ? failure.message
+              : "Generation failed. Please retry.";
+        setError(message);
+        if (requested) setState({ status: "error", error: message });
+      } finally {
+        if (controller.current === current) setBusy(false);
+      }
+    },
+    [repo, username],
+  );
+
+  // Analysis starts as soon as a repository page opens: the visitor chose the
+  // repository by navigating here, so asking again would be a second decision.
+  useEffect(() => {
+    void run();
+  }, [run]);
+
   useEffect(() => () => controller.current?.abort(), []);
 
-  async function run(type?: UmlType, refresh = false) {
-    controller.current?.abort();
-    const current = new AbortController();
-    controller.current = current;
-    setBusy(true);
-    setError("");
-    if (type)
-      setState({
-        status: "started",
-        startedAt: Date.now(),
-        message: `Analyzing ${UML_TYPES[type]} evidence...`,
-      });
-    try {
-      const response = await fetch("/api/uml", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username,
-          repo,
-          ...(type ? { type } : {}),
-          refresh,
-        }),
-        signal: current.signal,
-      });
-      const payload: unknown = await response.json();
-      const [{ z }, { umlAnalysisSchema, umlDocumentSchema }] =
-        await Promise.all([import("zod"), import("~/features/diagram/uml")]);
-      const generatedSchema = z.object({
-        document: umlDocumentSchema,
-        diagram: z.string().min(1).max(100_000),
-      });
-      if (!response.ok) {
-        const failure = z.object({ error: z.string() }).safeParse(payload);
-        throw new Error(
-          failure.success
-            ? failure.data.error
-            : "Generation failed. Please retry.",
-        );
-      }
-      if (controller.current !== current) return;
-      if (type) {
-        const result = generatedSchema.parse(payload);
-        const warning = z
-          .object({ persistenceWarning: z.string().optional() })
-          .parse(payload).persistenceWarning;
-        const next: DiagramStreamState = {
-          status: "complete",
-          diagram: result.diagram,
-          explanation: result.document.explanation,
-          graph: result.document.graph,
-          persistenceWarning: warning,
-        };
-        const date = new Date();
-        results.current.set(type, { state: next, date });
-        setState(next);
-        setLastGenerated(date);
-        setActiveType(type);
-      } else {
-        const result = z
-          .object({ analysis: umlAnalysisSchema, branch: z.string() })
-          .parse(payload);
-        setAnalysis(result.analysis);
-        setBranch(result.branch);
-        setSelected(result.analysis.recommendations[0]?.type ?? "");
-        results.current.clear();
-        setActiveType("");
-        setState({ status: "idle" });
-      }
-    } catch (failure) {
-      if (controller.current !== current) return;
-      const message = current.signal.aborted
-        ? "Generation cancelled."
-        : failure instanceof Error
-          ? failure.message
-          : "Generation failed.";
-      setError(message);
-      if (type) setState({ status: "error", error: message });
-    } finally {
-      if (controller.current === current) setBusy(false);
-    }
-  }
+  useEffect(() => {
+    if (!busy) return;
+    const timer = setInterval(() => setElapsed((value) => value + 1), 1_000);
+    return () => clearInterval(timer);
+  }, [busy]);
 
-  function choose(type: UmlType) {
+  const choose = (type: UmlType) => {
     setSelected(type);
     const saved = results.current.get(type);
     setState(saved?.state ?? { status: "idle" });
     setLastGenerated(saved?.date);
     setActiveType(saved ? type : "");
     setError("");
-  }
+  };
+
   const recommendation = analysis?.recommendations.find(
     (entry) => entry.type === selected,
   );
+  const hasDiagram = Boolean(state.diagram);
+
   return (
     <TooltipProvider delayDuration={500}>
-      <main>
+      <main className={styles.controlsTheme}>
         <section
-          className="mx-auto w-full max-w-6xl space-y-5 px-4 py-8 sm:px-8"
-          aria-label="UML analysis"
+          className={styles.analysis}
+          aria-label="Diagram analysis"
           aria-busy={busy}
         >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="min-w-0 text-2xl font-bold break-all">
-              {repository}
-            </h1>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={styles.actionButton}
-                onClick={() => setShowPrivate(true)}
-              >
-                <LockKeyhole size={14} aria-hidden="true" />
-                Private repository
-              </button>
-              <button
-                type="button"
-                className={styles.actionButton}
-                onClick={() => setShowKey(true)}
-              >
-                <Key size={14} aria-hidden="true" />
-                OpenCode key
-              </button>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-end gap-3">
-            <button
-              type="button"
-              disabled={busy}
-              className={`${styles.actionButton} ${styles.primary}`}
-              onClick={() => void run(undefined, Boolean(analysis))}
-            >
-              <FileSearch size={16} aria-hidden="true" />
-              {analysis ? "Reanalyze repository" : "Analyze repository"}
-            </button>
-            {analysis && (
-              <>
-                <div className="min-w-0 flex-1 basis-64 space-y-2">
-                  <label
-                    htmlFor="uml-type"
-                    className="block text-sm font-semibold"
-                  >
-                    Diagram type
-                  </label>
-                  <select
-                    id="uml-type"
-                    value={selected}
-                    disabled={busy || !analysis.recommendations.length}
-                    onChange={(event) => choose(event.target.value as UmlType)}
-                    className="neo-input w-full rounded-md px-3 py-2"
-                  >
-                    {!selected && (
-                      <option value="">No supported diagrams found</option>
-                    )}
-                    {Object.entries(UML_TYPES).map(([type, label]) => (
-                      <option
-                        key={type}
-                        value={type}
-                        disabled={
-                          !analysis.recommendations.some(
-                            (entry) => entry.type === type,
-                          )
-                        }
-                      >
-                        {label}
-                        {!analysis.recommendations.some(
-                          (entry) => entry.type === type,
-                        )
-                          ? " (insufficient evidence)"
-                          : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  type="button"
-                  disabled={busy || !selected}
-                  className={`${styles.actionButton} ${styles.primary}`}
-                  onClick={() => selected && void run(selected)}
+          <div className={styles.analysisPanel}>
+            <div className={styles.analysisHead}>
+              <h1 className={styles.analysisTitle}>
+                <ActivityMark active={busy} />
+                {repository}
+              </h1>
+              <div className={styles.analysisActions}>
+                <a
+                  className={styles.actionButton}
+                  href={`https://github.com/${repository}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
                 >
-                  <Play size={14} aria-hidden="true" />
-                  Generate
-                </button>
-              </>
-            )}
-            {busy && (
-              <button
-                type="button"
-                className={styles.actionButton}
-                onClick={() => controller.current?.abort()}
-              >
-                <Square size={14} aria-hidden="true" />
-                Cancel
-              </button>
-            )}
-          </div>
-          {busy && (
-            <p role="status">
-              {state.status === "started"
-                ? state.message
-                : "Inspecting repository source and diagram applicability..."}
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-              {error}
-            </p>
-          )}
-          {state.persistenceWarning && (
-            <p role="status" className="text-sm">
-              {state.persistenceWarning}
-            </p>
-          )}
-          {analysis && (
-            <p className="max-w-4xl text-sm leading-relaxed">
-              {analysis.summary}
-            </p>
-          )}
-          {recommendation && (
-            <div className="space-y-2 border-l-2 border-current pl-4 text-sm">
-              <p>{recommendation.reason}</p>
-              {selected && UML_NOTATION[selected] && (
-                <p className="opacity-75">{UML_NOTATION[selected]}</p>
-              )}
-              <div className="flex flex-wrap gap-3">
-                {recommendation.evidence.map((entry, index) => (
-                  <a
-                    key={`${entry.path}-${index}`}
-                    href={`https://github.com/${encodeURIComponent(username)}/${encodeURIComponent(repo)}/${entry.path === "README" ? "" : `blob/${encodeURIComponent(branch)}/${entry.path.split("/").map(encodeURIComponent).join("/")}`}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={entry.quote}
-                    className="break-all underline underline-offset-4"
+                  <GitHubIcon width={14} height={14} aria-hidden="true" />
+                  GitHub
+                </a>
+                {busy ? (
+                  <button
+                    type="button"
+                    className={styles.stop}
+                    onClick={() => controller.current?.abort()}
                   >
-                    {entry.path}
-                  </a>
-                ))}
+                    <Square size={12} fill="currentColor" aria-hidden="true" />
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className={styles.actionButton}
+                    onClick={() => void run(undefined, true)}
+                  >
+                    <RefreshCw size={13} aria-hidden="true" />
+                    {analysis ? "Reanalyze" : "Analyze"}
+                  </button>
+                )}
               </div>
             </div>
-          )}
-          {analysis && analysis.limitations.length > 0 && (
-            <details className="text-sm">
-              <summary className="cursor-pointer font-semibold">
-                Analysis limitations
-              </summary>
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                {analysis.limitations.map((limitation) => (
-                  <li key={limitation}>{limitation}</li>
-                ))}
-              </ul>
-            </details>
-          )}
+
+            {steps.length > 0 && (
+              <div
+                className={styles.stageList}
+                role="status"
+                aria-live="polite"
+              >
+                {steps.map((step, index) => {
+                  const active = busy && index === steps.length - 1;
+                  return (
+                    <div
+                      key={`${step.stage}-${index}`}
+                      className={styles.stageRow}
+                      data-state={active ? "active" : "done"}
+                    >
+                      <span className={styles.stageIcon}>
+                        {active ? (
+                          <span className={styles.stageSpinner} />
+                        ) : (
+                          <Check size={13} aria-hidden="true" />
+                        )}
+                      </span>
+                      <span className={styles.stageMessage}>
+                        {step.message}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {busy && (
+              <p className={styles.warningLine}>
+                {elapsed}s elapsed · the model reads the repository before it
+                draws anything
+              </p>
+            )}
+            {error && (
+              <p className={styles.errorLine} role="alert">
+                <CircleAlert size={15} aria-hidden="true" />
+                <span>{error}</span>
+              </p>
+            )}
+            {!error && state.persistenceWarning && (
+              <p className={styles.warningLine}>{state.persistenceWarning}</p>
+            )}
+
+            {analysis ? (
+              <>
+                <p className={styles.summary}>{analysis.summary}</p>
+
+                <div className={styles.selectorRow}>
+                  <div className={styles.selectField}>
+                    <label className={styles.selectLabel} htmlFor="uml-type">
+                      Diagram type
+                    </label>
+                    <select
+                      id="uml-type"
+                      className={styles.select}
+                      value={selected}
+                      disabled={busy || analysis.recommendations.length === 0}
+                      onChange={(event) =>
+                        choose(event.target.value as UmlType)
+                      }
+                    >
+                      {!selected && (
+                        <option value="">
+                          No diagram is supported by the inspected source
+                        </option>
+                      )}
+                      {Object.entries(UML_TYPES).map(([type, label]) => {
+                        const supported = analysis.recommendations.some(
+                          (entry) => entry.type === type,
+                        );
+                        return (
+                          <option key={type} value={type} disabled={!supported}>
+                            {label}
+                            {supported ? "" : " — insufficient evidence"}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    className={`${styles.actionButton} ${styles.primary}`}
+                    disabled={busy || !selected}
+                    onClick={() => selected && void run(selected)}
+                  >
+                    <Play size={13} aria-hidden="true" />
+                    Generate diagram
+                  </button>
+                </div>
+
+                {recommendation ? (
+                  <>
+                    <p className={styles.reason}>{recommendation.reason}</p>
+                    {selected && UML_NOTATION[selected] && (
+                      <p className={styles.notationNote}>
+                        {UML_NOTATION[selected]}
+                      </p>
+                    )}
+                    <div className={styles.evidence}>
+                      {recommendation.evidence.map((entry, index) => (
+                        <a
+                          key={`${entry.path}-${index}`}
+                          className={styles.evidenceLink}
+                          href={
+                            entry.path === "README"
+                              ? `https://github.com/${repository}#readme`
+                              : `https://github.com/${repository}/blob/${branch}/${entry.path
+                                  .split("/")
+                                  .map(encodeURIComponent)
+                                  .join("/")}`
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={entry.quote}
+                        >
+                          <ExternalLink size={11} aria-hidden="true" />
+                          {entry.path}
+                        </a>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className={styles.callout}>
+                    <p className={styles.calloutTitle}>
+                      No diagram type is fully supported yet
+                    </p>
+                    <p>
+                      The inspected excerpts do not contain the structures a
+                      diagram needs. A smaller repository, or one with more of
+                      its source available, gives the analysis more to stand on.
+                    </p>
+                  </div>
+                )}
+
+                {analysis.limitations.length > 0 && (
+                  <details className={styles.details}>
+                    <summary>
+                      Limitations <ChevronDown size={12} aria-hidden="true" />
+                    </summary>
+                    <ul className={styles.limitations}>
+                      {analysis.limitations.map((limitation) => (
+                        <li key={limitation}>{limitation}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </>
+            ) : (
+              !busy &&
+              !error && (
+                <div className={styles.callout}>
+                  <p className={styles.calloutTitle}>No analysis yet</p>
+                  <p>
+                    Start the analysis to see which diagram types this
+                    repository supports.
+                  </p>
+                </div>
+              )
+            )}
+          </div>
         </section>
-        <div hidden={state.status === "idle"}>
+
+        {hasDiagram && (
           <RepositoryWorkspace
-            key={selected || "analysis"}
+            key={activeType || "analysis"}
             repository={repository}
             state={state}
-            loading={busy && state.status === "started"}
+            loading={false}
             lastGenerated={lastGenerated}
             onRegenerate={() => {
               if (activeType) void run(activeType, true);
             }}
             onCancel={() => controller.current?.abort()}
-            onRenderError={(message) => {
-              setError(message);
-              setState((previous) => ({
-                ...previous,
-                status: "error",
-                error: message,
-              }));
-            }}
+            onRenderError={(message) => setError(message)}
             info={activeType ? <p>{UML_TYPES[activeType]}</p> : undefined}
           />
-        </div>
-        <ApiKeyDialog
-          isOpen={showKey}
-          onClose={() => setShowKey(false)}
-          onSaved={() => setShowKey(false)}
-        />
-        <PrivateReposDialog
-          isOpen={showPrivate}
-          repository={repository}
-          onClose={() => setShowPrivate(false)}
-          onSaved={() => setShowPrivate(false)}
-        />
+        )}
+
         <Toaster />
       </main>
     </TooltipProvider>

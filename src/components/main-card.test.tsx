@@ -1,20 +1,9 @@
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import MainCard from "~/components/main-card";
 
 const push = vi.fn();
-const credentials = vi.hoisted(() => ({ save: vi.fn() }));
-vi.mock("~/features/credentials/api", () => ({
-  saveCredential: credentials.save,
-}));
-
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push,
@@ -24,7 +13,6 @@ vi.mock("next/navigation", () => ({
 describe("MainCard", () => {
   beforeEach(() => {
     push.mockReset();
-    credentials.save.mockReset();
   });
 
   afterEach(() => {
@@ -79,27 +67,5 @@ describe("MainCard", () => {
         "Please enter a valid GitHub repository URL or owner/repo",
       ),
     ).not.toBeInTheDocument();
-  });
-
-  it("saves private access before navigating and stops when saving fails", async () => {
-    render(<MainCard />);
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "GitHub repository" }),
-      { target: { value: "owner/private" } },
-    );
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: "Private repository" }),
-    );
-    fireEvent.change(screen.getByLabelText("GitHub personal access token"), {
-      target: { value: "test-token" },
-    });
-    credentials.save.mockRejectedValueOnce(new Error("Unavailable"));
-    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
-    await screen.findByText("Could not save the GitHub token. Please retry.");
-    expect(push).not.toHaveBeenCalled();
-    credentials.save.mockResolvedValueOnce({ githubPatConfigured: true });
-    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
-    await waitFor(() => expect(push).toHaveBeenCalledWith("/owner/private"));
-    expect(credentials.save).toHaveBeenCalledWith("github_pat", "test-token");
   });
 });

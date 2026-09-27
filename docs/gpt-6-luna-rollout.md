@@ -51,12 +51,12 @@ The final comparison used fresh source evidence from four repositories, twice pe
 
 The selected configuration reduced sample median latency by 55.5% and median cold completed-response cost by 59.8%. The old-model cost excludes three cancelled attempts; including their unreported cost would increase the baseline. These are workload measurements for the chosen configurations, not a same-reasoning-level speed comparison or a universal quality claim.
 
-| Repository                  | Old times        | New times       | New cold completed-response costs | New node counts |
-| --------------------------- | ---------------- | --------------- | --------------------------------- | --------------- |
-| xoity/gituml | 14.86 s, 30.69 s | 16.25 s, 8.82 s | $0.004943, $0.004937              | 25, 24          |
-| excalidraw/excalidraw       | 15.2 s, 12.58 s  | 6.95 s, 6.99 s  | $0.006125, $0.006239              | 23, 21          |
-| fastapi/fastapi             | 16.15 s, 28.29 s | 6.56 s, 7.59 s  | $0.004545, $0.004590              | 20, 20          |
-| lukeed/clsx                 | 24.84 s, 6.22 s  | 4.19 s, 2.48 s  | $0.001281, $0.001202              | 7, 5            |
+| Repository            | Old times        | New times       | New cold completed-response costs | New node counts |
+| --------------------- | ---------------- | --------------- | --------------------------------- | --------------- |
+| xoity/gituml          | 14.86 s, 30.69 s | 16.25 s, 8.82 s | $0.004943, $0.004937              | 25, 24          |
+| excalidraw/excalidraw | 15.2 s, 12.58 s  | 6.95 s, 6.99 s  | $0.006125, $0.006239              | 23, 21          |
+| fastapi/fastapi       | 16.15 s, 28.29 s | 6.56 s, 7.59 s  | $0.004545, $0.004590              | 20, 20          |
+| lukeed/clsx           | 24.84 s, 6.22 s  | 4.19 s, 2.48 s  | $0.001281, $0.001202              | 7, 5            |
 
 Manual review confirmed GitUML's compilation node links to `src/server/generate/graph.ts`, FastAPI retains routing/dependency/OpenAPI stages, Excalidraw retains collaboration, storage, sharing and text-to-diagram branches, and clsx distinguishes its full and lite runtime paths. One low-effort clsx sample included unnecessary type-contract nodes; graph validity is not a guarantee of ideal component selection. This is a bounded architecture overview, not a verified whole-repository call graph.
 

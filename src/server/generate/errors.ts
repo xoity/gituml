@@ -24,11 +24,26 @@ export class UpstreamProviderError extends Error {
   }
 }
 
+/**
+ * A model response that was cut off, empty, or not parseable as the requested
+ * object. This is app-authored and actionable, so it is safe to show a caller,
+ * and it is retryable: the caller can ask the model again with the failure as
+ * feedback instead of failing the request.
+ */
+export class IncompleteStructuredOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IncompleteStructuredOutputError";
+  }
+}
+
 export function rethrowAsUpstreamProviderError(error: unknown): never {
   // Cancellation and the route deadline are the app's own control flow, so they
   // must reach the route unchanged rather than be reported as provider faults.
+  // A retryable output problem is also ours, not the provider's.
   if (
     error instanceof UpstreamProviderError ||
+    error instanceof IncompleteStructuredOutputError ||
     (error instanceof DOMException &&
       (error.name === "AbortError" || error.name === "TimeoutError"))
   ) {

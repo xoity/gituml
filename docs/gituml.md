@@ -20,12 +20,20 @@ for coding-agent traffic and has subscription usage limits. Confirm your public
 deployment's usage is permitted before serving arbitrary public traffic.
 See <https://opencode.ai/docs/go/>.
 
-Server-funded UML calls require the existing Upstash environment variables and
-fail closed if the daily token ledger is unavailable. `UML_DAILY_TOKEN_LIMIT`
+The provider is the operator's choice, not the visitor's: set `AI_PROVIDER`
+(`opencode` by default) and its server key (`OPENCODE_API_KEY`,
+`OPENAI_API_KEY` or `OPENROUTER_API_KEY`). That key funds every run for
+visitors. A visitor's own OpenAI key, saved from the header's **API Key**
+dialog, is used only when `AI_PROVIDER=openai`; on any other provider it is
+ignored, so a self-hosted GitUML can run OpenCode Go only and needs no
+visitor-facing provider key at all. When the server key is missing, the page
+names the variable the operator has to set.
+
+Server-funded runs require the existing Upstash environment variables and fail
+closed if the daily token ledger is unavailable. `UML_DAILY_TOKEN_LIMIT`
 defaults to 10 million tokens. Each operation reserves up to 1 million tokens;
 measured usage replaces that bound, and unmeasured attempts retain conservative
-estimates. Browser-supplied keys have separate HttpOnly, same-origin cookies and
-are never forwarded to the retained OpenAI routes.
+estimates.
 
 R2 is optional for local UML use. Configure the existing R2 variables and
 `CACHE_KEY_SECRET` for persistence. Cached results are separated by repository,
@@ -33,13 +41,20 @@ diagram type, model and source fingerprint. GitHub access is checked before each
 read; private results use the inherited token-derived private namespace. Missing
 storage is reported rather than pretending results were saved. Use separate
 GitUML buckets and Redis credentials, not the live GitUML deployment's data.
-Set `NEXT_PUBLIC_SITE_URL` to your deployment origin.
+Set `NEXT_PUBLIC_SITE_URL` to your deployment origin. Because storage is
+optional, `/browse` renders an empty catalog instead of failing when the R2
+variables are missing.
 
 ## Workflow and notation
 
-Enter a repository, analyze it, select an applicable diagram, then generate.
-All 18 requested types are listed; unsupported recommendations remain disabled
-with an insufficient-evidence label. The API accepts only known type IDs.
+Opening a repository starts the analysis immediately - the visit is the
+decision, so there is no extra confirmation step - and `POST /api/uml` streams
+its progress back over SSE. The page shows each stage (reading the repository,
+choosing files, analyzing, validating, saving) with a spinner and elapsed time,
+and generation streams the same way. Select an applicable diagram, then
+generate. All 18 requested types are listed; unsupported recommendations remain
+disabled with an insufficient-evidence label. The API accepts only known type
+IDs.
 
 Class, sequence, state, ER, and C4 use native Mermaid grammars. Use case,
 activity, component, deployment, package, communication, infrastructure, data

@@ -1,7 +1,11 @@
 export type AIProvider = "openai" | "openrouter" | "opencode";
 export type GenerationServiceTier = "default" | "priority";
 
-const DEFAULT_PROVIDER: AIProvider = "openai";
+// GitUML ships as an OpenCode Go deployment: without AI_PROVIDER set, every
+// stage runs on the server's OpenCode key. An operator who would rather run
+// OpenAI or OpenRouter sets AI_PROVIDER and the matching key.
+const DEFAULT_PROVIDER: AIProvider = "opencode";
+const DEFAULT_OPENCODE_MODEL = "deepseek-v4-flash-vision-exp";
 const DEFAULT_OPENAI_MODEL = "gpt-6-luna";
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-5.6-terra";
 const MANAGED_OPENAI_MODEL_PATTERN =
@@ -80,7 +84,7 @@ export function shouldUseExactInputTokenCount(params: {
 
 export function getModel(provider = getProvider()): string {
   if (provider === "opencode") {
-    return readEnvValue("OPENCODE_MODEL") ?? "deepseek-v4-flash-vision-exp";
+    return readEnvValue("OPENCODE_MODEL") ?? DEFAULT_OPENCODE_MODEL;
   }
   if (provider === "openrouter") {
     return readEnvValue("OPENROUTER_MODEL") ?? DEFAULT_OPENROUTER_MODEL;

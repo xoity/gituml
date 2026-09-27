@@ -59,6 +59,70 @@ const document: UmlDocument = {
 };
 const repository = { username: "owner", repo: "repo", branch: "main" };
 
+describe("evidence verification", () => {
+  const sources = new Map([
+    [
+      "app.ts",
+      [
+        "[import bindings for calls below]",
+        'run from "./run"',
+        "[excerpt begins at line 12; gaps omitted]",
+        "export async function handler() {",
+        "  await run();",
+        "}",
+        "[end of excerpts; unsampled lines omitted]",
+      ].join("\n"),
+    ],
+  ]);
+
+  it("accepts a quote copied verbatim from the excerpt", () => {
+    expect(
+      verifyUmlEvidence({ path: "app.ts", quote: "  await run();" }, sources),
+    ).toBe(true);
+  });
+
+  it("accepts a quote that includes the excerpt's own marker lines", () => {
+    expect(
+      verifyUmlEvidence(
+        {
+          path: "app.ts",
+          quote:
+            "[excerpt begins at line 12; gaps omitted]\nexport async function handler() {",
+        },
+        sources,
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a binding quoted from the import preamble", () => {
+    expect(
+      verifyUmlEvidence({ path: "app.ts", quote: 'run from "./run"' }, sources),
+    ).toBe(true);
+  });
+
+  it("still rejects paraphrased, joined or invented quotes", () => {
+    for (const quote of [
+      // A substring of a real line is still a real quote; these are not.
+      "await run() now",
+      "export async function handler() { await run(); }",
+      "export function handler() {",
+      "run from './run'",
+      "run from ./run",
+    ]) {
+      expect(verifyUmlEvidence({ path: "app.ts", quote }, sources)).toBe(false);
+    }
+  });
+
+  it("rejects a quote for a file that was never inspected", () => {
+    expect(
+      verifyUmlEvidence(
+        { path: "missing.ts", quote: "  await run();" },
+        sources,
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("UML compiler", () => {
   it("compiles every supported type into parseable Mermaid", async () => {
     for (const type of Object.keys(UML_TYPES) as UmlType[]) {

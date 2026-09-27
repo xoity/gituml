@@ -24,7 +24,10 @@ vi.mock("openai", () => ({
   },
 }));
 
-import { UpstreamProviderError } from "~/server/generate/errors";
+import {
+  IncompleteStructuredOutputError,
+  UpstreamProviderError,
+} from "~/server/generate/errors";
 import {
   generateStructuredOutput,
   streamCompletion,
@@ -94,27 +97,65 @@ describe("OpenCode Go", () => {
     );
     expect(openAiMocks.responsesParse).not.toHaveBeenCalled();
   });
-  it("rejects truncated and schema-invalid structured output", async () => {
-    for (const [finish_reason, content] of [
-      ["length", '{"ok":true}'],
-      ["stop", '{"ok":"wrong"}'],
-    ]) {
-      openAiMocks.chatCreate.mockResolvedValue({
-        choices: [{ finish_reason, message: { content } }],
+  it("marks a cut-off or empty response retryable, and a wrong shape a schema failure", async () => {
+    const request = () =>
+      generateStructuredOutput({
+        provider: "opencode" as const,
+        model: "deepseek-v4-flash-vision-exp",
+        apiKey: "test-key",
+        systemPrompt: "system",
+        userPrompt: "user",
+        schema: z.object({ ok: z.boolean() }),
+        schemaName: "test",
       });
-      await expect(
-        generateStructuredOutput({
-          provider: "opencode",
-          model: "deepseek-v4-flash-vision-exp",
-          apiKey: "test-key",
-          systemPrompt: "system",
-          userPrompt: "user",
-          schema: z.object({ ok: z.boolean() }),
-          schemaName: "test",
-        }),
-      ).rejects.toBeInstanceOf(UpstreamProviderError);
-    }
+
+    openAiMocks.chatCreate.mockResolvedValue({
+      choices: [
+        { finish_reason: "length", message: { content: '{"ok":true}' } },
+      ],
+    });
+    await expect(request()).rejects.toBeInstanceOf(
+      IncompleteStructuredOutputError,
+    );
+
+    openAiMocks.chatCreate.mockResolvedValue({
+      choices: [{ finish_reason: "stop", message: { content: "   " } }],
+    });
+    await expect(request()).rejects.toBeInstanceOf(
+      IncompleteStructuredOutputError,
+    );
+
+    openAiMocks.chatCreate.mockResolvedValue({
+      choices: [
+        { finish_reason: "stop", message: { content: '{"ok":"wrong"}' } },
+      ],
+    });
+    await expect(request()).rejects.toBeInstanceOf(UpstreamProviderError);
   });
+
+  it("accepts an object wrapped in a fenced block", async () => {
+    openAiMocks.chatCreate.mockResolvedValue({
+      choices: [
+        {
+          finish_reason: "stop",
+          message: { content: 'Here it is:\n```json\n{"ok":true}\n```' },
+        },
+      ],
+    });
+
+    const result = await generateStructuredOutput({
+      provider: "opencode",
+      model: "deepseek-v4-flash-vision-exp",
+      apiKey: "test-key",
+      systemPrompt: "system",
+      userPrompt: "user",
+      schema: z.object({ ok: z.boolean() }),
+      schemaName: "test",
+    });
+
+    expect(result.output).toEqual({ ok: true });
+  });
+
   it("streams Chat Completions and closes the underlying stream", async () => {
     const abort = vi.fn();
     openAiMocks.chatCreate.mockResolvedValue(

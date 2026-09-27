@@ -25,7 +25,6 @@ interface UseCredentialSettingOptions {
 }
 
 const CREDENTIAL_STATUS_KEYS = {
-  opencode_api_key: "opencodeApiKeyConfigured",
   openai_api_key: "openaiApiKeyConfigured",
   github_pat: "githubPatConfigured",
 } as const satisfies Record<CredentialKind, keyof CredentialStatus>;

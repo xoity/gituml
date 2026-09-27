@@ -5,6 +5,7 @@ import type { ZodType } from "zod";
 
 import type { GenerationTokenUsage } from "~/features/diagram/cost";
 import {
+  IncompleteStructuredOutputError,
   rethrowAsUpstreamProviderError,
   UpstreamProviderError,
 } from "~/server/generate/errors";
@@ -34,7 +35,7 @@ function getEnvApiKey(provider: AIProvider): string | undefined {
 function getOpenRouterHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   const siteUrl = process.env.OPENROUTER_SITE_URL?.trim();
-  const appName = process.env.OPENROUTER_APP_NAME?.trim() || "GitUML";
+  const appName = process.env.OPENROUTER_APP_NAME?.trim() || "GitDiagram";
 
   if (siteUrl) {
     headers["HTTP-Referer"] = siteUrl;
@@ -161,6 +162,45 @@ interface StreamCompletionResult {
 
 const NO_PARSED_STRUCTURED_PAYLOAD_ERROR =
   "Structured output parsing returned no parsed payload.";
+
+/**
+ * Chat Completions models routinely wrap the object in a fenced block or add a
+ * sentence around it. Take the first balanced object instead of failing the
+ * whole request over a stray fence.
+ */
+function extractJsonObject(text: string): unknown {
+  const trimmed = text
+    .trim()
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/, "")
+    .trim();
+  const start = trimmed.indexOf("{");
+  if (start < 0) {
+    return JSON.parse(trimmed) as unknown;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < trimmed.length; index++) {
+    const character = trimmed[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === "{") depth++;
+    else if (character === "}" && --depth === 0) {
+      return JSON.parse(trimmed.slice(start, index + 1)) as unknown;
+    }
+  }
+
+  throw new IncompleteStructuredOutputError(
+    "The response was not a complete JSON object.",
+  );
+}
 
 // OpenRouter fronts many models, and only some honor the strict json_schema
 // response format the graph stage requires. Only a request rejected over the
@@ -472,20 +512,35 @@ export async function generateStructuredOutput<T>({
         {
           model,
           messages: buildMessages(
-            `${systemPrompt}\nReturn only a JSON object matching this schema:\n${JSON.stringify(z.toJSONSchema(schema))}`,
+            `${systemPrompt}\nReturn only a JSON object matching this schema:\n${JSON.stringify(z.toJSONSchema(schema))}\nKeep it compact: at most 6 members per node and 4 evidence records per element.`,
             userPrompt,
           ),
           response_format: { type: "json_object" },
-          max_tokens: 16000,
+          // A reasoning model spends part of this budget before the JSON, and a
+          // wide graph legitimately needs the rest; too small a cap truncates
+          // the object mid-property and the parse then fails.
+          max_tokens: 32_000,
         },
         buildRequestOptions({ provider, signal, clientRequestId }),
       );
       const choice = response.choices[0];
-      if (choice?.finish_reason !== "stop" || !choice.message.content)
-        throw new Error("OpenCode returned an incomplete structured response.");
-      const rawText = choice.message.content;
+      const content = choice?.message.content;
+      const truncated = choice?.finish_reason === "length";
+      // Both cases are the app's to retry, not the provider's to report: the
+      // route asks again with the failure as feedback.
+      if (truncated) {
+        throw new IncompleteStructuredOutputError(
+          "The response was cut off before the diagram was complete.",
+        );
+      }
+      if (!content?.trim()) {
+        throw new IncompleteStructuredOutputError(
+          "The model returned an empty response.",
+        );
+      }
+      const rawText = content;
       return {
-        output: schema.parse(JSON.parse(rawText)),
+        output: schema.parse(extractJsonObject(rawText)),
         rawText,
         usage: normalizeGenerationUsage(response.usage),
       };

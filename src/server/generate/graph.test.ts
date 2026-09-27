@@ -25,6 +25,44 @@ function nodeFixture(id: string, path: string | null) {
   };
 }
 
+describe("README evidence path", () => {
+  it("accepts a node linked to the README and still rejects unknown paths", () => {
+    const graph = {
+      groups: [],
+      nodes: [
+        {
+          id: "readme",
+          label: "README",
+          type: "component",
+          description: null,
+          path: "README",
+          groupId: null,
+          shape: "box" as const,
+        },
+        {
+          id: "invented",
+          label: "Invented",
+          type: "component",
+          description: null,
+          path: "src/does-not-exist.ts",
+          groupId: null,
+          shape: "box" as const,
+        },
+      ],
+      edges: [],
+    };
+
+    const result = validateDiagramGraph(graph, new Set(["src/app.ts"]));
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({
+      category: "missing_repository_path",
+      path: "nodes.1.path",
+    });
+  });
+});
+
 describe("in-place graph repair", () => {
   it("treats a graph whose only faults are unresolvable paths as repairable", () => {
     const fileTreeLookup = buildFileTreeLookup("src/index.ts");

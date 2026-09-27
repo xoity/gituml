@@ -84,7 +84,6 @@ describe("request credentials", () => {
     );
     await expect(getCredentialStatus()).resolves.toEqual({
       openaiApiKeyConfigured: true,
-      opencodeApiKeyConfigured: false,
       githubPatConfigured: false,
     });
   });
@@ -105,7 +104,6 @@ describe("request credentials", () => {
     );
     await expect(getCredentialStatus()).resolves.toEqual({
       openaiApiKeyConfigured: false,
-      opencodeApiKeyConfigured: false,
       githubPatConfigured: false,
     });
   });
@@ -120,26 +118,6 @@ describe("request credentials", () => {
       "sk-test",
       expect.objectContaining({ secure: true }),
     );
-  });
-
-  it("keeps OpenCode keys separate from OpenAI credentials", async () => {
-    await setCredential("opencode_api_key", "opencode-test");
-    await expect(resolveRequestCredentials(request())).resolves.toMatchObject({
-      opencodeApiKey: "opencode-test",
-      apiKey: undefined,
-    });
-    expect(mocks.cookieStore.set).toHaveBeenCalledWith(
-      "gituml_opencode_api_key",
-      "opencode-test",
-      expect.objectContaining({
-        httpOnly: true,
-        sameSite: "strict",
-        path: "/api",
-      }),
-    );
-    await expect(
-      resolveRequestCredentials(request("https://evil.gituml.example")),
-    ).resolves.not.toHaveProperty("opencodeApiKey");
   });
 
   it("prefers explicit compatibility credentials over stored cookies", async () => {

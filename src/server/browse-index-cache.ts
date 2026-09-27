@@ -65,6 +65,9 @@ async function getCachedRecentBrowseIndex(): Promise<RecentBrowseIndex | null> {
       }
       return index;
     })
+    // Unconfigured or unreachable storage means "no index", not a broken page:
+    // the browse UI has its own empty state for that.
+    .catch(() => null)
     .finally(() => {
       if (inFlightRecentBrowseIndexRead === readPromise) {
         inFlightRecentBrowseIndexRead = null;
@@ -102,6 +105,9 @@ export async function getCachedBrowseIndex(): Promise<
       }
       return entries;
     })
+    // Same as the recent index: a storage problem empties the catalog instead
+    // of returning a 500 the page cannot explain.
+    .catch(() => null)
     .finally(() => {
       if (inFlightBrowseIndexRead === readPromise) {
         inFlightBrowseIndexRead = null;

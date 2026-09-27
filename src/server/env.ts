@@ -12,3 +12,12 @@ export function readIntEnv(
   const parsed = Number.parseInt(process.env[name]?.trim() ?? "", 10);
   return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
 }
+
+/**
+ * A boolean setting: true only for 1/true/yes/on. Unset, empty and unrecognised
+ * values are false, so a typo can never switch a safeguard off by itself.
+ */
+export function readBoolEnv(name: string): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}

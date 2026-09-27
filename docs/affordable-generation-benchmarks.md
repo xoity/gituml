@@ -10,16 +10,16 @@ These timings exclude browser rendering. Fixtures retain their original measured
 
 For requests without recovery, cold cost charges every input token at the cache-write rate ($0.50/M in Fast mode) and output/reasoning at $2.40/M. The two recovered rows show only the completed response's cold cost: **the cancelled attempt has additional unmeasured cost**. Production includes a conservative estimate for that cancelled attempt and labels the total approximate. The 2-cent target is therefore a normal-generation target, not a hard per-request spending cap. No output-token caps were introduced.
 
-| Repository                  | Runs | Model + validation | Nodes |                       Completed response cold cost | Slow recoveries |
-| --------------------------- | ---: | -----------------: | ----: | -------------------------------------------------: | --------------: |
-| BurntSushi/ripgrep          |    3 |        11.1–16.8 s | 16–21 |                                     $0.0124–0.0148 |               0 |
-| xoity/gituml |    3 |         9.0–17.8 s | 24–27 |                                     $0.0112–0.0144 |               0 |
-| caddyserver/caddy           |    3 |        10.8–16.4 s | 20–27 |                                     $0.0137–0.0146 |               0 |
-| excalidraw/excalidraw       |    3 |        12.0–14.8 s |    23 |                                     $0.0147–0.0149 |               0 |
-| expressjs/express           |    3 |        10.6–33.2 s | 16–18 | $0.0128–0.0144 + interrupted estimate when retried |               1 |
-| fastapi/fastapi             |    3 |        13.7–15.1 s | 19–24 |                                     $0.0128–0.0133 |               0 |
-| lukeed/clsx                 |    3 |          5.6–6.4 s |     5 |                                     $0.0038–0.0039 |               0 |
-| pallets/flask               |    3 |         7.1–31.6 s | 18–22 | $0.0103–0.0146 + interrupted estimate when retried |               1 |
+| Repository            | Runs | Model + validation | Nodes |                       Completed response cold cost | Slow recoveries |
+| --------------------- | ---: | -----------------: | ----: | -------------------------------------------------: | --------------: |
+| BurntSushi/ripgrep    |    3 |        11.1–16.8 s | 16–21 |                                     $0.0124–0.0148 |               0 |
+| xoity/gituml          |    3 |         9.0–17.8 s | 24–27 |                                     $0.0112–0.0144 |               0 |
+| caddyserver/caddy     |    3 |        10.8–16.4 s | 20–27 |                                     $0.0137–0.0146 |               0 |
+| excalidraw/excalidraw |    3 |        12.0–14.8 s |    23 |                                     $0.0147–0.0149 |               0 |
+| expressjs/express     |    3 |        10.6–33.2 s | 16–18 | $0.0128–0.0144 + interrupted estimate when retried |               1 |
+| fastapi/fastapi       |    3 |        13.7–15.1 s | 19–24 |                                     $0.0128–0.0133 |               0 |
+| lukeed/clsx           |    3 |          5.6–6.4 s |     5 |                                     $0.0038–0.0039 |               0 |
+| pallets/flask         |    3 |         7.1–31.6 s | 18–22 | $0.0103–0.0146 + interrupted estimate when retried |               1 |
 
 An earlier 27-run sample finished in 5.7–18.3 seconds including fixture ingestion. Extending testing exposed **81-second Excalidraw and 68-second FastAPI outliers**, despite Fast service. That evidence led to the recovery mechanism; it would be misleading to omit those runs and claim a universal sub-50-second guarantee. Provider-wide or network failures can still exceed the target because the replacement can also stall.
 
@@ -65,12 +65,12 @@ Commit `d439b6484a602437b6160867f35143988ffd322a` deployed as `dpl_BsgGqMvFU2mrF
 
 Real browser clicks were timed until the client announced **Diagram ready**, which is gated by successful SVG rendering. The stored session audits confirmed Luna and the following results:
 
-| Live repository             | Click to rendered diagram | Components / relationships | Actual API cost (USD) |
-| --------------------------- | ------------------------: | -------------------------: | --------------------: |
-| xoity/gituml |                  15.973 s |                    28 / 30 |            $0.0134436 |
-| excalidraw/excalidraw       |                  15.160 s |                    23 / 23 |           $0.00709636 |
-| caddyserver/caddy           |                  10.657 s |                    24 / 28 |            $0.0056756 |
-| lukeed/clsx                 |                   5.969 s |                      5 / 6 |           $0.00181636 |
+| Live repository       | Click to rendered diagram | Components / relationships | Actual API cost (USD) |
+| --------------------- | ------------------------: | -------------------------: | --------------------: |
+| xoity/gituml          |                  15.973 s |                    28 / 30 |            $0.0134436 |
+| excalidraw/excalidraw |                  15.160 s |                    23 / 23 |           $0.00709636 |
+| caddyserver/caddy     |                  10.657 s |                    24 / 28 |            $0.0056756 |
+| lukeed/clsx           |                   5.969 s |                      5 / 6 |           $0.00181636 |
 
 The three larger live repositories read all 12 selected files, without unavailable excerpts. clsx read all six selected files. Each needed one model request and no repair or slow recovery. Excalidraw's live graph included collaboration, encryption, local persistence, export, libraries, and text-to-diagram integration. GitUML linked its graph compiler to the correct implementation.
 

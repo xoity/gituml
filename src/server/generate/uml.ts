@@ -2,12 +2,38 @@ import { compileDiagramGraph, validateDiagramGraph } from "./graph";
 import { normalizeDiagramText } from "~/features/diagram/graph";
 import type { UmlAnalysis, UmlDocument } from "~/features/diagram/uml";
 
+/**
+ * The excerpt a model is shown is not the raw file: `excerptSource` inserts
+ * `[excerpt begins at line N; gaps omitted]` markers, a trailing
+ * `[end of excerpts; unsampled lines omitted]`, and an
+ * `[import bindings for calls below]` preamble. A model that quotes a line
+ * together with its marker, or quotes one of those binding lines, is quoting
+ * text it really was shown, so those two forms are accepted. Nothing else is:
+ * the quote must still appear verbatim in the inspected material.
+ */
+const EXCERPT_MARKER =
+  /^\[(?:excerpt begins at line \d+; gaps omitted|end of excerpts; unsampled lines omitted|import bindings for calls below)\]$/;
+
+function quoteAppearsInSource(source: string, quote: string): boolean {
+  if (source.includes(quote)) return true;
+
+  const lines = quote.split("\n");
+  if (lines.length < 2) return false;
+  // Drop the excerpt's own marker lines, then require the remaining text to be
+  // present exactly as written.
+  const withoutMarkers = lines.filter(
+    (line) => !EXCERPT_MARKER.test(line.trim()),
+  );
+  if (withoutMarkers.length === lines.length) return false;
+  return withoutMarkers.every((line) => source.includes(line));
+}
+
 export function verifyUmlEvidence(
   evidence: { path: string; quote: string },
   sources: ReadonlyMap<string, string>,
 ): boolean {
   const source = sources.get(evidence.path);
-  return Boolean(source && source.includes(evidence.quote));
+  return Boolean(source && quoteAppearsInSource(source, evidence.quote));
 }
 
 export function validateUmlAnalysis(

@@ -580,14 +580,70 @@ async function fetchGithubData(
   };
 }
 
+/**
+ * Ingestion is the slowest and most rate-limited part of a run, and the tree,
+ * README and blob metadata are immutable for a given commit. Cache them in
+ * process, keyed by the resolved commit SHA, so a repeat run (or a second
+ * diagram type on the same repository) skips GitHub entirely. A new commit
+ * changes the key, so a moved-on repository is never served a stale tree.
+ */
+const INGESTION_CACHE_TTL_MS = 10 * 60 * 1000;
+const INGESTION_CACHE_MAX_ENTRIES = 50;
+const ingestionCache = new Map<
+  string,
+  { expiresAt: number; data: GithubData }
+>();
+
+function readIngestionCache(key: string): GithubData | null {
+  const entry = ingestionCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    ingestionCache.delete(key);
+    return null;
+  }
+  // Refresh recency so the entries in use survive eviction.
+  ingestionCache.delete(key);
+  ingestionCache.set(key, entry);
+  return entry.data;
+}
+
+function writeIngestionCache(key: string, data: GithubData): void {
+  ingestionCache.set(key, {
+    expiresAt: Date.now() + INGESTION_CACHE_TTL_MS,
+    data,
+  });
+  while (ingestionCache.size > INGESTION_CACHE_MAX_ENTRIES) {
+    const oldest = ingestionCache.keys().next().value;
+    if (oldest === undefined) break;
+    ingestionCache.delete(oldest);
+  }
+}
+
+/** Test seam: the cache must not leak between cases. */
+export function clearIngestionCacheForTests(): void {
+  ingestionCache.clear();
+}
+
 export async function getGithubData(
   username: string,
   repo: string,
   githubPat?: string,
   signal?: AbortSignal,
 ): Promise<GithubData> {
+  // A caller's own token sees private metadata the server cannot, so only
+  // token-free (public) reads are shared between callers.
+  const cacheKey = githubPat?.trim()
+    ? null
+    : `${username.toLowerCase()}/${repo.toLowerCase()}`;
+  if (cacheKey) {
+    const cached = readIngestionCache(cacheKey);
+    if (cached) return cached;
+  }
+
   try {
-    return await fetchGithubData(username, repo, githubPat, signal);
+    const data = await fetchGithubData(username, repo, githubPat, signal);
+    if (cacheKey) writeIngestionCache(cacheKey, data);
+    return data;
   } catch (error) {
     if (
       !githubPat?.trim() ||

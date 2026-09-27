@@ -43,26 +43,26 @@ describe("credential dialogs", () => {
     });
     mocks.writeText.mockResolvedValue(undefined);
     mocks.getCredentialStatus.mockResolvedValue({
-      opencodeApiKeyConfigured: false,
+      openaiApiKeyConfigured: false,
       githubPatConfigured: false,
     });
     mocks.saveCredential.mockResolvedValue({
-      opencodeApiKeyConfigured: true,
+      openaiApiKeyConfigured: true,
       githubPatConfigured: true,
     });
     mocks.clearCredential.mockResolvedValue({
-      opencodeApiKeyConfigured: false,
+      openaiApiKeyConfigured: false,
       githubPatConfigured: false,
     });
   });
 
-  it("saves an OpenCode key without ever pre-filling the secret", async () => {
+  it("saves an OpenAI key without ever pre-filling the secret", async () => {
     const onClose = vi.fn();
     const onSaved = vi.fn();
     render(<ApiKeyDialog isOpen onClose={onClose} onSaved={onSaved} />);
 
     await waitFor(() => expect(mocks.getCredentialStatus).toHaveBeenCalled());
-    const input = screen.getByLabelText("OpenCode Go API key", {
+    const input = screen.getByLabelText("OpenAI API key", {
       selector: "input",
     });
     expect(input).toHaveValue("");
@@ -74,7 +74,7 @@ describe("credential dialogs", () => {
 
     await waitFor(() =>
       expect(mocks.saveCredential).toHaveBeenCalledWith(
-        "opencode_api_key",
+        "openai_api_key",
         "sk-browser-entry",
       ),
     );
@@ -85,13 +85,13 @@ describe("credential dialogs", () => {
   it("does not let a late status response overwrite a successful save", async () => {
     const credentialStatus = createDeferred<{
       githubPatConfigured: boolean;
-      opencodeApiKeyConfigured: boolean;
+      openaiApiKeyConfigured: boolean;
     }>();
     mocks.getCredentialStatus.mockReturnValueOnce(credentialStatus.promise);
     render(<ApiKeyDialog isOpen onClose={vi.fn()} />);
 
     fireEvent.change(
-      screen.getByLabelText("OpenCode Go API key", { selector: "input" }),
+      screen.getByLabelText("OpenAI API key", { selector: "input" }),
       {
         target: { value: "sk-browser-entry" },
       },
@@ -104,7 +104,7 @@ describe("credential dialogs", () => {
 
     credentialStatus.resolve({
       githubPatConfigured: false,
-      opencodeApiKeyConfigured: false,
+      openaiApiKeyConfigured: false,
     });
 
     await waitFor(() =>
@@ -116,7 +116,7 @@ describe("credential dialogs", () => {
 
   it("accepts fine-grained GitHub PATs and clears only through the API", async () => {
     mocks.getCredentialStatus.mockResolvedValueOnce({
-      opencodeApiKeyConfigured: false,
+      openaiApiKeyConfigured: false,
       githubPatConfigured: true,
     });
     const onClose = vi.fn();
@@ -191,16 +191,16 @@ describe("credential dialogs", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t copy");
   });
 
-  it("opens OpenCode setup separately and copies instructions without the entered key", async () => {
+  it("opens OpenAI setup separately and copies instructions without the entered key", async () => {
     render(<ApiKeyDialog isOpen onClose={vi.fn()} />);
     expect(
-      screen.getByRole("link", { name: "Open OpenCode console" }),
-    ).toHaveAttribute("href", "https://opencode.ai/auth");
+      screen.getByRole("link", { name: "Create key on OpenAI" }),
+    ).toHaveAttribute("href", "https://platform.openai.com/api-keys");
     expect(
-      screen.getByRole("link", { name: "Open OpenCode console" }),
+      screen.getByRole("link", { name: "Create key on OpenAI" }),
     ).toHaveAttribute("target", "_blank");
     fireEvent.change(
-      screen.getByLabelText("OpenCode Go API key", { selector: "input" }),
+      screen.getByLabelText("OpenAI API key", { selector: "input" }),
       {
         target: { value: "sk-secret-entry" },
       },
@@ -210,8 +210,8 @@ describe("credential dialogs", () => {
     );
     await screen.findByRole("button", { name: "Copied! Paste into your AI" });
     const prompt = mocks.writeText.mock.calls[0]![0] as string;
-    expect(prompt).toContain("https://opencode.ai/auth");
-    expect(prompt).toContain("consume my OpenCode Go subscription limits");
+    expect(prompt).toContain("https://platform.openai.com/api-keys");
+    expect(prompt).toContain("billed to my OpenAI API account");
     expect(prompt).toContain("Do not put the key in chat, logs, or files.");
     expect(prompt).not.toContain("sk-secret-entry");
     expect(mocks.saveCredential).not.toHaveBeenCalled();
@@ -221,9 +221,9 @@ describe("credential dialogs", () => {
     {
       name: "API key",
       Component: ApiKeyDialog,
-      inputLabel: "OpenCode Go API key",
+      inputLabel: "OpenAI API key",
       noun: "key",
-      credential: "opencode_api_key",
+      credential: "openai_api_key",
     },
     {
       name: "GitHub token",
@@ -263,11 +263,11 @@ describe("credential dialogs", () => {
 
     it("shows clearing feedback and refreshes only after a successful clear", async () => {
       mocks.getCredentialStatus.mockResolvedValueOnce({
-        opencodeApiKeyConfigured: true,
+        openaiApiKeyConfigured: true,
         githubPatConfigured: true,
       });
       const cleared = createDeferred<{
-        opencodeApiKeyConfigured: boolean;
+        openaiApiKeyConfigured: boolean;
         githubPatConfigured: boolean;
       }>();
       mocks.clearCredential.mockReturnValueOnce(cleared.promise);
@@ -289,7 +289,7 @@ describe("credential dialogs", () => {
       expect(onSaved).not.toHaveBeenCalled();
       await act(async () =>
         cleared.resolve({
-          opencodeApiKeyConfigured: false,
+          openaiApiKeyConfigured: false,
           githubPatConfigured: false,
         }),
       );
@@ -300,7 +300,7 @@ describe("credential dialogs", () => {
 
     it("does not retry after a pending save is dismissed", async () => {
       const saved = createDeferred<{
-        opencodeApiKeyConfigured: boolean;
+        openaiApiKeyConfigured: boolean;
         githubPatConfigured: boolean;
       }>();
       mocks.saveCredential.mockReturnValueOnce(saved.promise);
@@ -322,7 +322,7 @@ describe("credential dialogs", () => {
       );
       await act(async () =>
         saved.resolve({
-          opencodeApiKeyConfigured: true,
+          openaiApiKeyConfigured: true,
           githubPatConfigured: true,
         }),
       );

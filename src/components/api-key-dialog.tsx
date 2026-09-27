@@ -8,38 +8,43 @@ interface ApiKeyDialogProps {
   onSaved?: () => void | Promise<void>;
 }
 
-const API_KEYS_URL = "https://opencode.ai/auth";
+const API_KEYS_URL = "https://platform.openai.com/api-keys";
 const AI_PROMPT = [
-  "Help me set up an OpenCode Go API key for GitUML.",
-  `Use my browser to open ${API_KEYS_URL} and help me create a key in my chosen workspace.`,
-  "Explain that generations consume my OpenCode Go subscription limits. Ask before subscribing or adding credits.",
-  "Help me paste the key directly into GitUML's OpenCode Go API key dialog. Do not put the key in chat, logs, or files.",
+  "Help me set up an OpenAI API key for GitUML.",
+  `Use my browser to open ${API_KEYS_URL} and help me create a secret key named GitUML in my chosen project.`,
+  "Explain that runs using this key are billed to my OpenAI API account. If billing needs setup, walk me through it and ask before adding payment details or buying credits.",
+  "Help me paste the key directly into GitUML's OpenAI API key dialog and save it. Do not put the key in chat, logs, or files.",
   "If you cannot use my browser, walk me through these steps briefly.",
 ].join("\n\n");
 
+/**
+ * Bring-your-own OpenAI key. A self-hosted GitUML that runs a different
+ * provider (the operator sets AI_PROVIDER and its server key) ignores this
+ * value; it is used only when the operator runs OpenAI on the caller's key.
+ */
 export function ApiKeyDialog(props: ApiKeyDialogProps) {
   return (
     <CredentialDialog
       {...props}
-      credential="opencode_api_key"
-      title="OpenCode Go API key"
-      description="Generate UML diagrams with DeepSeek V4 Flash Vision Exp on OpenCode Go."
+      credential="openai_api_key"
+      title="OpenAI API key"
+      description="Use your own key to run GitUML on your OpenAI account."
       setup={{
         instructions: (
           <>
-            Create a key in your OpenCode workspace with an active Go
-            subscription. Generations consume your subscription limits.
+            Create a secret key in your OpenAI project. Runs with this key are
+            billed to your OpenAI account.
           </>
         ),
         url: API_KEYS_URL,
-        linkLabel: "Open OpenCode console",
+        linkLabel: "Create key on OpenAI",
         aiPrompt: AI_PROMPT,
       }}
       dataUsage={
         <>
           Your key is kept in a protected browser cookie for 30 days. Page
-          JavaScript cannot read it. GitUML uses it only on the server to
-          generate your diagrams.
+          JavaScript cannot read it. GitUML uses it only on the server, and only
+          when the operator has configured OpenAI as the provider.
         </>
       }
     />
