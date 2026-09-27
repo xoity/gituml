@@ -5,6 +5,11 @@
 # script. Skip it once with `git push --no-verify`.
 set -e
 
+# Git runs hooks with a minimal PATH, so a bun installed under ~/.bun/bin is
+# invisible here even though the shell finds it. Add the usual locations.
+PATH="$HOME/.bun/bin:$PATH"
+export PATH
+
 bun run format:check
 bun run lint
 bun run typecheck
