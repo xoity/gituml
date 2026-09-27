@@ -165,6 +165,29 @@ describe("repository evidence preparation", () => {
   });
 });
 
+describe("README evidence bounds", () => {
+  it("marks where the README excerpt ends so a quote past it is visibly absent", () => {
+    const data = repository(["src/main.ts"]);
+    data.readme = "A".repeat(20_000);
+
+    const context = prepareRepositoryContext(data);
+
+    expect(context.readme).toContain("[README excerpt ends here");
+    // The marker is the last thing in the excerpt, so a model can see the cut.
+    expect(context.readme.trimEnd().endsWith("]")).toBe(true);
+    expect(context.readme.length).toBeLessThan(20_000);
+  });
+
+  it("leaves a short README untouched", () => {
+    const data = repository(["src/main.ts"]);
+    data.readme = "# Demo\nA short readme.";
+
+    expect(prepareRepositoryContext(data).readme).toBe(
+      "# Demo\nA short readme.",
+    );
+  });
+});
+
 describe("analysis model routing", () => {
   it("keeps managed architecture on the affordable configured model", () => {
     expect(

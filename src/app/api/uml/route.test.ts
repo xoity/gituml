@@ -102,6 +102,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.stubEnv("AI_PROVIDER", "opencode");
   vi.stubEnv("OPENCODE_API_KEY", "server-key");
+  // The local .env may switch metering off; these cases cover the metered path.
+  vi.stubEnv("UML_BUDGET_UNMETERED", "");
   mocks.credentials.mockResolvedValue({});
   mocks.rate.mockResolvedValue({ allowed: true });
   mocks.github.mockResolvedValue({

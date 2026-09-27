@@ -198,9 +198,11 @@ export function prepareRepositoryContext(data: GithubData) {
   return {
     selectedPaths,
     fileTree: paths.sort().join("\n"),
+    // The cut is marked in the text itself, so a model quoting the README can
+    // see where the inspected material ends instead of quoting past it.
     readme:
       data.readme.length > MAX_README_CHARACTERS
-        ? `${data.readme.slice(0, MAX_README_CHARACTERS)}\n[README excerpt ends here.]`
+        ? `${data.readme.slice(0, MAX_README_CHARACTERS)}\n[README excerpt ends here; the rest was not inspected.]`
         : data.readme,
     // GitHub's own partial listing counts too: the tree excerpt may then
     // miss parts of the repository even when every listed path fits.
