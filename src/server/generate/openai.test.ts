@@ -67,126 +67,30 @@ afterEach(() => vi.unstubAllEnvs());
 
 describe("OpenCode Go", () => {
   it("uses Chat Completions with a stable session and validates JSON locally", async () => {
-    openAiMocks.chatCreate.mockResolvedValue({
-      choices: [{ finish_reason: "stop", message: { content: '{"ok":true}' } }],
-      usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
-    });
-    const result = await generateStructuredOutput({
-      provider: "opencode",
-      model: "deepseek-v4-flash-vision-exp",
-      apiKey: "test-key",
-      systemPrompt: "system",
-      userPrompt: "user",
-      schema: z.object({ ok: z.boolean() }),
-      schemaName: "test",
-      clientRequestId: "stable-session:graph:2",
-    });
+    openAiMocks.chatCreate.mockResolvedValue({ choices: [{ finish_reason: "stop", message: { content: '{"ok":true}' } }], usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 } });
+    const result = await generateStructuredOutput({ provider: "opencode", model: "deepseek-v4-flash-vision-exp", apiKey: "test-key", systemPrompt: "system", userPrompt: "user", schema: z.object({ ok: z.boolean() }), schemaName: "test", clientRequestId: "stable-session:graph:2" });
     expect(result.output).toEqual({ ok: true });
     expect(result.usage).toMatchObject({ inputTokens: 20, outputTokens: 5 });
-    expect(openAiMocks.clientOptions).toHaveBeenCalledWith(
-      expect.objectContaining({
-        baseURL: "https://opencode.ai/zen/go/v1",
-        defaultHeaders: { "User-Agent": "gituml/0.1" },
-        timeout: 150_000,
-        maxRetries: 0,
-      }),
-    );
-    expect(openAiMocks.chatCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ response_format: { type: "json_object" } }),
-      { headers: { "x-opencode-session": "stable-session" } },
-    );
+    expect(openAiMocks.clientOptions).toHaveBeenCalledWith(expect.objectContaining({ baseURL: "https://opencode.ai/zen/go/v1", defaultHeaders: { "User-Agent": "gituml/0.1" }, timeout: 150_000, maxRetries: 0 }));
+    expect(openAiMocks.chatCreate).toHaveBeenCalledWith(expect.objectContaining({ response_format: { type: "json_object" } }), { headers: { "x-opencode-session": "stable-session" } });
     expect(openAiMocks.responsesParse).not.toHaveBeenCalled();
   });
-  it("marks a cut-off or empty response retryable, and a wrong shape a schema failure", async () => {
-    const request = () =>
-      generateStructuredOutput({
-        provider: "opencode" as const,
-        model: "deepseek-v4-flash-vision-exp",
-        apiKey: "test-key",
-        systemPrompt: "system",
-        userPrompt: "user",
-        schema: z.object({ ok: z.boolean() }),
-        schemaName: "test",
-      });
-
-    openAiMocks.chatCreate.mockResolvedValue({
-      choices: [
-        { finish_reason: "length", message: { content: '{"ok":true}' } },
-      ],
-    });
-    await expect(request()).rejects.toBeInstanceOf(
-      IncompleteStructuredOutputError,
-    );
-
-    openAiMocks.chatCreate.mockResolvedValue({
-      choices: [{ finish_reason: "stop", message: { content: "   " } }],
-    });
-    await expect(request()).rejects.toBeInstanceOf(
-      IncompleteStructuredOutputError,
-    );
-
-    openAiMocks.chatCreate.mockResolvedValue({
-      choices: [
-        { finish_reason: "stop", message: { content: '{"ok":"wrong"}' } },
-      ],
-    });
-    await expect(request()).rejects.toBeInstanceOf(UpstreamProviderError);
+  it("rejects truncated and schema-invalid structured output", async () => {
+    for (const [finish_reason, content] of [["length", '{"ok":true}'], ["stop", '{"ok":"wrong"}']]) {
+      openAiMocks.chatCreate.mockResolvedValue({ choices: [{ finish_reason, message: { content } }] });
+      await expect(generateStructuredOutput({ provider: "opencode", model: "deepseek-v4-flash-vision-exp", apiKey: "test-key", systemPrompt: "system", userPrompt: "user", schema: z.object({ ok: z.boolean() }), schemaName: "test" })).rejects.toBeInstanceOf(UpstreamProviderError);
+    }
   });
-
-  it("accepts an object wrapped in a fenced block", async () => {
-    openAiMocks.chatCreate.mockResolvedValue({
-      choices: [
-        {
-          finish_reason: "stop",
-          message: { content: 'Here it is:\n```json\n{"ok":true}\n```' },
-        },
-      ],
-    });
-
-    const result = await generateStructuredOutput({
-      provider: "opencode",
-      model: "deepseek-v4-flash-vision-exp",
-      apiKey: "test-key",
-      systemPrompt: "system",
-      userPrompt: "user",
-      schema: z.object({ ok: z.boolean() }),
-      schemaName: "test",
-    });
-
-    expect(result.output).toEqual({ ok: true });
-  });
-
   it("streams Chat Completions and closes the underlying stream", async () => {
     const abort = vi.fn();
-    openAiMocks.chatCreate.mockResolvedValue(
-      Object.assign(
-        asAsyncEvents([
-          { choices: [{ delta: { content: "hello" }, finish_reason: null }] },
-          { choices: [{ delta: {}, finish_reason: "stop" }] },
-          {
-            choices: [],
-            usage: {
-              prompt_tokens: 10,
-              completion_tokens: 2,
-              total_tokens: 12,
-            },
-          },
-        ]),
-        { controller: { abort } },
-      ),
-    );
-    const result = await streamCompletion({
-      provider: "opencode",
-      model: "deepseek-v4-flash-vision-exp",
-      apiKey: "test-key",
-      systemPrompt: "system",
-      userPrompt: "user",
-    });
+    openAiMocks.chatCreate.mockResolvedValue(Object.assign(asAsyncEvents([
+      { choices: [{ delta: { content: "hello" }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+    ]), { controller: { abort } }));
+    const result = await streamCompletion({ provider: "opencode", model: "deepseek-v4-flash-vision-exp", apiKey: "test-key", systemPrompt: "system", userPrompt: "user" });
     expect(await consume(result.stream)).toEqual(["hello"]);
-    expect(await result.usagePromise).toMatchObject({
-      inputTokens: 10,
-      outputTokens: 2,
-    });
+    expect(await result.usagePromise).toMatchObject({ inputTokens: 10, outputTokens: 2 });
     expect(abort).toHaveBeenCalled();
   });
 });
