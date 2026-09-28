@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   rate: vi.fn(),
   read: vi.fn(),
   write: vi.fn(),
+  browse: vi.fn(),
 }));
 
 vi.mock("~/server/http/request-credentials", () => ({
@@ -36,6 +37,9 @@ vi.mock("~/server/storage/quota-store", () => ({
   checkQuotaInUpstash: mocks.quota,
   markQuotaReservationStartedInUpstash: mocks.started,
   commitQuotaUsageInUpstash: mocks.commit,
+}));
+vi.mock("~/server/storage/browse-diagrams", () => ({
+  upsertBrowseIndexEntry: mocks.browse,
 }));
 vi.mock("~/server/storage/r2", () => ({
   getJsonObject: mocks.read,
@@ -127,6 +131,7 @@ beforeEach(() => {
   mocks.commit.mockResolvedValue(undefined);
   mocks.read.mockResolvedValue(null);
   mocks.write.mockResolvedValue(undefined);
+  mocks.browse.mockResolvedValue([]);
 });
 
 afterEach(() => vi.unstubAllEnvs());
@@ -244,6 +249,28 @@ describe("UML route", () => {
     const events = await readEvents(await POST(request()));
     expect(events.at(-1)).toMatchObject({ errorCode: "NO_SERVER_KEY" });
     expect(events.at(-1)?.error).toContain("OPENCODE_API_KEY");
+  });
+
+  it("adds a saved public result to the browse index, and never a private one", async () => {
+    stubStorageEnv();
+
+    await readEvents(await POST(request()));
+    expect(mocks.browse).toHaveBeenCalledWith(
+      expect.objectContaining({ username: "owner", repo: "repo" }),
+    );
+
+    // A private repository must stay out of the shared catalog.
+    mocks.browse.mockClear();
+    mocks.credentials.mockResolvedValue({ githubPat: "private-token" });
+    mocks.github.mockResolvedValue({
+      defaultBranch: "main",
+      fileTree: "app.ts",
+      readme: "A project",
+      pathTypes: new Map([["app.ts", "blob"]]),
+      isPrivate: true,
+    });
+    await readEvents(await POST(request()));
+    expect(mocks.browse).not.toHaveBeenCalled();
   });
 
   it("verifies access before reading a cached private result", async () => {

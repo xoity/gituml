@@ -172,6 +172,64 @@ describe("UML compiler", () => {
       compileUmlDocument({ ...document, type: "er" }, repository),
     ).toContain("node_app ||--o{ node_base");
   });
+  it("emits real state-machine notation, not labelled boxes", () => {
+    const stateDocument = {
+      ...document,
+      type: "state" as const,
+      graph: {
+        groups: [],
+        nodes: [
+          {
+            id: "idle",
+            label: "Idle",
+            type: "state",
+            description: null,
+            path: null,
+            groupId: null,
+            shape: "box" as const,
+          },
+          {
+            id: "running",
+            label: "Running",
+            type: "state",
+            description: null,
+            path: null,
+            groupId: null,
+            shape: "box" as const,
+          },
+        ],
+        edges: [
+          {
+            from: "idle",
+            to: "running",
+            label: "start",
+            description: null,
+            style: null,
+          },
+        ],
+      },
+      nodeEvidence: ["idle", "running"].map((node) => ({ node, evidence })),
+      edgeDetails: [
+        {
+          index: 0,
+          relation: "transition" as const,
+          sourceCardinality: "one" as const,
+          targetCardinality: "one" as const,
+          evidence,
+        },
+      ],
+    };
+
+    const compiled = compileUmlDocument(stateDocument, repository);
+
+    expect(compiled).toContain("stateDiagram-v2");
+    // A start marker, and states declared as states rather than quoted boxes.
+    expect(compiled).toContain("[*] --> node_idle");
+    expect(compiled).toContain("node_idle : Idle");
+    expect(compiled).toContain("node_idle --> node_running : start");
+    expect(compiled).not.toContain('state "Idle" as node_idle');
+  });
+
   it("requires evidence from inspected files for every edge", () => {
     const sources = new Map([[evidence.path, evidence.quote]]);
     expect(() =>

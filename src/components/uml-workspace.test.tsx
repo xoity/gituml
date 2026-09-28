@@ -141,13 +141,15 @@ describe("UML workspace", () => {
     render(<UmlWorkspace username="owner" repo="repo" />);
 
     stream.push({ stage: "repository", message: "Reading owner/repo" });
-    expect(await screen.findByText("Reading owner/repo")).toBeInTheDocument();
+    // The current step shows in the one-line status and in the full timeline.
+    expect(await screen.findAllByText("Reading owner/repo")).toHaveLength(2);
 
     stream.push({ stage: "sources", message: "Inspected 1 source file" });
-    expect(
-      await screen.findByText("Inspected 1 source file"),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/elapsed/)).toBeInTheDocument();
+    expect(await screen.findAllByText("Inspected 1 source file")).toHaveLength(
+      2,
+    );
+    // The status line carries the elapsed seconds.
+    expect(screen.getByText(/^\d+s$/)).toBeInTheDocument();
 
     stream.push({
       result: { analysis, branch: "main", sourcePaths: ["app.ts"] },

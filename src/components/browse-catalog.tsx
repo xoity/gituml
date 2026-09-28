@@ -275,7 +275,7 @@ export function BrowseCatalog({
         </h2>
         <p className="mt-4 max-w-3xl text-base text-[hsl(var(--neo-soft-text))] dark:text-neutral-300">
           {loadError ??
-            "This page reads only the hosted browse index. The index is currently unavailable in storage."}
+            "This page reads the hosted browse index, which needs R2 for storage and Upstash Redis for its write lock. Set the R2 and UPSTASH_REDIS_REST_* variables, then generate a diagram to create the first entry."}
         </p>
       </div>
     );

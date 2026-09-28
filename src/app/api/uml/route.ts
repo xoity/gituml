@@ -45,6 +45,7 @@ import {
 } from "~/server/generate/errors";
 import { getWriteLocation } from "~/server/storage/cache-key";
 import { getJsonObject, putJsonObject } from "~/server/storage/r2";
+import { upsertBrowseIndexEntry } from "~/server/storage/browse-diagrams";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -358,6 +359,30 @@ export async function POST(request: Request) {
           })
             .then(() => true)
             .catch(() => false);
+          // Only public repositories belong in the shared catalog, and only
+          // once the artifact is actually stored. A failed index write must
+          // not fail the run: the diagram is already saved.
+          if (persisted && !data.isPrivate) {
+            send({ stage: "indexing", message: "Adding it to Browse" });
+            await upsertBrowseIndexEntry({
+              username,
+              repo,
+              lastSuccessfulAt: new Date().toISOString(),
+              stargazerCount: data.stargazerCount,
+            }).catch((error: unknown) => {
+              // The diagram is already saved, so a catalog failure must not
+              // fail the run - but it must be visible, or /browse stays empty
+              // with no explanation.
+              console.error(
+                JSON.stringify({
+                  event: "uml.browse_index_failed",
+                  repository: `${username}/${repo}`,
+                  error:
+                    error instanceof Error ? error.message : "Unknown error",
+                }),
+              );
+            });
+          }
         }
         send({
           result: {
@@ -374,7 +399,7 @@ export async function POST(request: Request) {
 
       const instruction = type
         ? `Create only a ${UML_TYPES[type]} (type=${type}). Produce graph nodes and edges with evidence for EVERY node, member, interval and edge (edgeDetails.index is its zero-based graph.edges index). Use real tree paths for node links, or null for external/conceptual nodes. Relations point from subject to target: inheritance from child to parent; composition/aggregation from owner to part. Sequence graph.edges are chronological messages. Empty arrays for inapplicable members/intervals. Titles and explanation must describe this diagram's scope and uncertainty.`
-        : `Return a summary, limitations and only the applicable recommendations from ${JSON.stringify(UML_TYPES)}. Each recommendation needs a precise reason and source evidence. Do not pad the list: zero recommendations is valid when evidence is insufficient.`;
+        : `Return a summary, limitations and only the applicable recommendations from ${JSON.stringify(UML_TYPES)}. Each recommendation needs a precise reason and source evidence. Work through every one of the 18 types and recommend each one the inspected evidence actually supports - a repository with classes, ordered calls, lifecycle states, deployment config and data movement should yield several. Do not invent support, and do not omit a type merely because another already covers similar ground: zero recommendations is valid only when the evidence is genuinely insufficient.`;
 
       /**
        * A parse, schema or truncation failure is a repairable output problem:

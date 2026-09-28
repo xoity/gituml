@@ -518,8 +518,11 @@ export async function generateStructuredOutput<T>({
           response_format: { type: "json_object" },
           // A reasoning model spends part of this budget before the JSON, and a
           // wide graph legitimately needs the rest; too small a cap truncates
-          // the object mid-property and the parse then fails.
-          max_tokens: 32_000,
+          // the object mid-property and the parse then fails. A class diagram
+          // with members is the largest document this app asks for, so the cap
+          // is generous: a truncated response costs a whole retry, which is far
+          // more expensive than the unused headroom.
+          max_tokens: 64_000,
         },
         buildRequestOptions({ provider, signal, clientRequestId }),
       );

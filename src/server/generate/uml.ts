@@ -84,17 +84,29 @@ export function validateUmlDocument(
     document.edgeDetails.length !== edges.size
   )
     throw new Error("Every relationship requires exactly one evidence record.");
-  if (
-    document.edgeDetails.some(
-      (edge) =>
-        edge.index >= document.graph.edges.length ||
-        !verifyUmlEvidence(edge.evidence, sources),
-    )
-  )
-    throw new Error("Invalid relationship evidence.");
+  for (const detail of document.edgeDetails) {
+    if (detail.index >= document.graph.edges.length) {
+      throw new Error(
+        `Relationship evidence points at edge ${detail.index}, which does not exist.`,
+      );
+    }
+    if (!verifyUmlEvidence(detail.evidence, sources)) {
+      const edge = document.graph.edges[detail.index]!;
+      throw new Error(
+        `The quote for the relationship "${edge.from} -> ${edge.to}" was not found in ${detail.evidence.path}. Quote the exact line that shows that relationship, or drop the relationship.`,
+      );
+    }
+  }
   for (const member of [...document.members, ...document.intervals]) {
-    if (!nodes.has(member.node) || !verifyUmlEvidence(member.evidence, sources))
-      throw new Error("Invalid member or timing evidence.");
+    if (!nodes.has(member.node)) {
+      throw new Error(`Member evidence names unknown node "${member.node}".`);
+    }
+    if (!verifyUmlEvidence(member.evidence, sources)) {
+      const label = "name" in member ? member.name : member.state;
+      throw new Error(
+        `The quote for "${label}" on node "${member.node}" was not found in ${member.evidence.path}. Quote that element's own declaration line exactly, or omit it.`,
+      );
+    }
   }
   if (document.type === "timing" && !document.intervals.length)
     throw new Error("Timing diagrams require evidenced durations.");
@@ -166,17 +178,49 @@ export function compileUmlDocument(
     ].join("\n");
   }
   if (document.type === "state") {
-    return [
-      "stateDiagram-v2",
-      "direction TB",
-      ...nodes.map(
-        (node) => `state "${text(node.label)}" as ${nodeId(node.id)}`,
-      ),
-      ...edges.map(
-        (edge) =>
-          `${nodeId(edge.from)} --> ${nodeId(edge.to)}${edge.label ? ` : ${text(edge.label)}` : ""}`,
-      ),
-    ].join("\n");
+    // Real state-machine notation: a start marker, composite states for the
+    // groups the model declared, and labelled transitions. A node whose label
+    // reads as a start/end pseudo-state becomes [*] rather than a box.
+    const isPseudo = (label: string) =>
+      /^(?:\[\*\]|start|initial|begin|end|final|done|stopped|terminated)$/i.test(
+        label.trim(),
+      );
+    const lines = ["stateDiagram-v2", "direction TB"];
+    const grouped = new Set<string>();
+    for (const group of document.graph.groups) {
+      const members = nodes.filter((node) => node.groupId === group.id);
+      if (!members.length) continue;
+      lines.push(`state "${text(group.label)}" as group_${group.id} {`);
+      for (const node of members) {
+        grouped.add(node.id);
+        lines.push(
+          isPseudo(node.label)
+            ? `  state "${text(node.label)}" as ${nodeId(node.id)}`
+            : `  ${nodeId(node.id)} : ${text(node.label)}`,
+        );
+      }
+      lines.push("}");
+    }
+    for (const node of nodes) {
+      if (grouped.has(node.id)) continue;
+      lines.push(
+        isPseudo(node.label)
+          ? `state "${text(node.label)}" as ${nodeId(node.id)}`
+          : `${nodeId(node.id)} : ${text(node.label)}`,
+      );
+    }
+    // A start marker is only drawn when the model did not declare one, so an
+    // explicit initial state is never duplicated.
+    const hasStart = nodes.some((node) => isPseudo(node.label));
+    if (!hasStart && nodes.length) {
+      lines.push(`[*] --> ${nodeId(nodes[0]!.id)}`);
+    }
+    for (const edge of edges) {
+      lines.push(
+        `${nodeId(edge.from)} --> ${nodeId(edge.to)}${edge.label ? ` : ${text(edge.label)}` : ""}`,
+      );
+    }
+    return lines.join("\n");
   }
   if (document.type === "er") {
     const left = { one: "||", "zero-one": "|o", many: "}o", "one-many": "}|" };

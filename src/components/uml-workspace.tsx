@@ -289,10 +289,10 @@ export function UmlWorkspace({
                 {busy ? (
                   <button
                     type="button"
-                    className={styles.stop}
+                    className={styles.actionButton}
                     onClick={() => controller.current?.abort()}
                   >
-                    <Square size={12} fill="currentColor" aria-hidden="true" />
+                    <Square size={11} fill="currentColor" aria-hidden="true" />
                     Stop
                   </button>
                 ) : (
@@ -308,42 +308,50 @@ export function UmlWorkspace({
               </div>
             </div>
 
-            {steps.length > 0 && (
-              <div
-                className={styles.stageList}
-                role="status"
-                aria-live="polite"
-              >
-                {steps.map((step, index) => {
-                  const active = busy && index === steps.length - 1;
-                  return (
-                    <div
-                      key={`${step.stage}-${index}`}
-                      className={styles.stageRow}
-                      data-state={active ? "active" : "done"}
-                    >
-                      <span className={styles.stageIcon}>
-                        {active ? (
-                          <span className={styles.stageSpinner} />
-                        ) : (
-                          <Check size={13} aria-hidden="true" />
-                        )}
-                      </span>
-                      <span className={styles.stageMessage}>
-                        {step.message}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
+            {/* One line for the current step, so the panel stays short. */}
             {busy && (
-              <p className={styles.warningLine}>
-                {elapsed}s elapsed · the model reads the repository before it
-                draws anything
+              <p className={styles.statusLine} data-active="true" role="status">
+                <span className={styles.stageSpinner} />
+                <span className={styles.statusText}>
+                  {steps.at(-1)?.message ?? "Starting"}
+                </span>
+                <span className={styles.statusElapsed}>{elapsed}s</span>
               </p>
             )}
+
+            {/* The full timeline, collapsed so it never pushes the diagram down. */}
+            {steps.length > 0 && (
+              <details className={styles.timeline} open={busy}>
+                <summary>
+                  {busy ? "Progress" : "Last run"}
+                  <ChevronDown size={12} aria-hidden="true" />
+                </summary>
+                <div className={styles.stageList} aria-live="polite">
+                  {steps.map((step, index) => {
+                    const active = busy && index === steps.length - 1;
+                    return (
+                      <div
+                        key={`${step.stage}-${index}`}
+                        className={styles.stageRow}
+                        data-state={active ? "active" : "done"}
+                      >
+                        <span className={styles.stageIcon}>
+                          {active ? (
+                            <span className={styles.stageSpinner} />
+                          ) : (
+                            <Check size={13} aria-hidden="true" />
+                          )}
+                        </span>
+                        <span className={styles.stageMessage}>
+                          {step.message}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
+
             {error && (
               <p className={styles.errorLine} role="alert">
                 <CircleAlert size={15} aria-hidden="true" />
@@ -356,8 +364,6 @@ export function UmlWorkspace({
 
             {analysis ? (
               <>
-                <p className={styles.summary}>{analysis.summary}</p>
-
                 <div className={styles.selectorRow}>
                   <div className={styles.selectField}>
                     <label className={styles.selectLabel} htmlFor="uml-type">
@@ -401,62 +407,65 @@ export function UmlWorkspace({
                   </button>
                 </div>
 
-                {recommendation ? (
-                  <>
-                    <p className={styles.reason}>{recommendation.reason}</p>
-                    {selected && UML_NOTATION[selected] && (
-                      <p className={styles.notationNote}>
-                        {UML_NOTATION[selected]}
+                {/* Why this type, and the analysis prose, behind a disclosure. */}
+                <details className={styles.notes}>
+                  <summary>
+                    Why this diagram
+                    <ChevronDown size={12} aria-hidden="true" />
+                  </summary>
+                  {recommendation ? (
+                    <>
+                      <p className={styles.reason}>{recommendation.reason}</p>
+                      {selected && UML_NOTATION[selected] && (
+                        <p className={styles.notationNote}>
+                          {UML_NOTATION[selected]}
+                        </p>
+                      )}
+                      <div className={styles.evidence}>
+                        {recommendation.evidence.map((entry, index) => (
+                          <a
+                            key={`${entry.path}-${index}`}
+                            className={styles.evidenceLink}
+                            href={
+                              entry.path === "README"
+                                ? `https://github.com/${repository}#readme`
+                                : `https://github.com/${repository}/blob/${branch}/${entry.path
+                                    .split("/")
+                                    .map(encodeURIComponent)
+                                    .join("/")}`
+                            }
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={entry.quote}
+                          >
+                            <ExternalLink size={11} aria-hidden="true" />
+                            {entry.path}
+                          </a>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className={styles.callout}>
+                      <p className={styles.calloutTitle}>
+                        No diagram type is fully supported yet
                       </p>
-                    )}
-                    <div className={styles.evidence}>
-                      {recommendation.evidence.map((entry, index) => (
-                        <a
-                          key={`${entry.path}-${index}`}
-                          className={styles.evidenceLink}
-                          href={
-                            entry.path === "README"
-                              ? `https://github.com/${repository}#readme`
-                              : `https://github.com/${repository}/blob/${branch}/${entry.path
-                                  .split("/")
-                                  .map(encodeURIComponent)
-                                  .join("/")}`
-                          }
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title={entry.quote}
-                        >
-                          <ExternalLink size={11} aria-hidden="true" />
-                          {entry.path}
-                        </a>
-                      ))}
+                      <p>
+                        The inspected excerpts do not contain the structures a
+                        diagram needs. A smaller repository, or one with more of
+                        its source available, gives the analysis more to stand
+                        on.
+                      </p>
                     </div>
-                  </>
-                ) : (
-                  <div className={styles.callout}>
-                    <p className={styles.calloutTitle}>
-                      No diagram type is fully supported yet
-                    </p>
-                    <p>
-                      The inspected excerpts do not contain the structures a
-                      diagram needs. A smaller repository, or one with more of
-                      its source available, gives the analysis more to stand on.
-                    </p>
-                  </div>
-                )}
-
-                {analysis.limitations.length > 0 && (
-                  <details className={styles.details}>
-                    <summary>
-                      Limitations <ChevronDown size={12} aria-hidden="true" />
-                    </summary>
+                  )}
+                  <p className={styles.summary}>{analysis.summary}</p>
+                  {analysis.limitations.length > 0 && (
                     <ul className={styles.limitations}>
                       {analysis.limitations.map((limitation) => (
                         <li key={limitation}>{limitation}</li>
                       ))}
                     </ul>
-                  </details>
-                )}
+                  )}
+                </details>
               </>
             ) : (
               !busy &&

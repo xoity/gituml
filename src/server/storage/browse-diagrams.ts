@@ -461,7 +461,10 @@ export async function upsertBrowseIndexEntry(
         callback: () =>
           materializePendingBrowseIndex({
             generation: randomUUID(),
-            requireExistingIndex: true,
+            // The first entry on a fresh deployment has no index to extend, so
+            // it creates one. Once an index exists, a missing read is treated
+            // as a failure rather than a reason to overwrite the catalog.
+            requireExistingIndex: false,
           }),
       });
     } catch (error) {
